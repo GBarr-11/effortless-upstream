@@ -146,6 +146,7 @@ __STYLE__
     <div class="sets" id="sets" role="group" aria-label="textless sets"></div>
     <h3 class="group">Interactive sets</h3>
     <div class="sets" id="games" role="group" aria-label="Interactive sets"></div>
+    <div id="gameinfo" class="note" hidden></div>
     <h3 class="group">Your sets</h3>
     <div class="sets" id="mysets" role="group" aria-label="Your sets"></div>
 
@@ -329,7 +330,17 @@ function pickSet(e) {
 }
 $('sets').addEventListener('click', pickSet);
 $('mysets').addEventListener('click', pickSet);
-$('games').addEventListener('click', pickSet);
+$('games').addEventListener('click', function (e) {
+  var b = e.target.closest('button[data-set]'); if (!b) return;
+  var info = $('gameinfo');
+  if (!info.hidden && info.dataset.game === b.dataset.set) { info.hidden = true; return }
+  info.dataset.game = b.dataset.set;
+  info.innerHTML = '<b>Chess</b> is played in the chat, not part of the card's scenes. Start it in any chat:<br>'
+    + '<code>/chess</code> start, or open the game in play<br>'
+    + '<code>/chess new</code> start over &nbsp; <code>/chess claude</code> play against Claude &nbsp; <code>/chess white</code> or <code>/chess black</code> pick your side &nbsp; <code>/chess end</code> close it<br>'
+    + 'While a game is open in a chat, the board takes the card there and the scenes come back when you close it. Other chats keep their scenes. One board at a time: starting it in another chat moves it there.';
+  info.hidden = false;
+});
 $('grid').addEventListener('click', function (e) {
   var st = e.target.closest('button[data-star]');
   if (st) {

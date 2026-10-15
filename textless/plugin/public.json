@@ -2,9 +2,10 @@
   {
     "version": "0.15.1",
     "date": "2026-10-16",
-    "note": "One chess board at a time.",
+    "note": "One chess board at a time, started with /chess.",
     "detail": [
-      "With chess open in two chats, only the chat that started or took the game shows the board. /chess takes it to another chat."
+      "Chess is started with /chess and is no longer part of the card's rotation. While a game is open in a chat, the board takes the card there; /chess end brings the scenes back.",
+      "One board at a time: with the game open in two chats, only the one that started or took it shows the board."
     ],
     "public": true
   },
@@ -13,7 +14,7 @@
     "date": "2026-10-16",
     "note": "Play chess on the card, minimize it, and a few fixes.",
     "detail": [
-      "Chess is a set under Interactive sets: pick it on the settings page and the board takes the card. /chess plays in the chat too.",
+      "Play chess in the chat with /chess, against a built-in opponent. The settings page lists it under Interactive sets with its commands.",
       "Play against a built-in opponent with four levels, or against Claude with /chess claude. Your side is picked by chance.",
       "Piece sounds on every move, with check, win and game over. Sound can be switched off on the board, and your own wav files in ~/.claude/textless/sounds replace the bundled ones.",
       "Minimize the card to one line and bring it back, from the card or under any answer.",

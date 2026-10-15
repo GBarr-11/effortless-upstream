@@ -249,19 +249,18 @@ describe('playing black', () => {
 })
 
 describe('the Chess set', () => {
-  test('picking the set makes the board the card, with a game started for the person', async ($, on) => {
+  test('is not a set of the card: chess starts only with /chess, and the card never draws the board by itself', async ($, on) => {
     const host = fakeHost(on, true)
     const clock = mock.clock(on)
     const e: any = $
     const r = await e.command.run({ command: 'textless', args: 'set chess' })
-    expect(String(r?.text ?? '')).toContain('Chess')
+    expect(String(r?.text ?? '')).not.toContain('Chess')
     await e.prompt.submit({ text: 'go' })
     await wait(1600)
     await step(e, 'k1')
     await clock.advance(3500)
     const card: any = await step(e, 'k1')
-    expect(await card.find({ key: `chess-${squareOf('e2')}` })).toBeDefined()
-    expect(await card.find({ key: 'textless-minimize' })).toBeDefined()
-    expect((host.store.get('chess') as any)?.fen).toBeDefined()
+    expect(await card.find({ key: `chess-${squareOf('e2')}` })).toBeUndefined()
+    expect(host.store.get('chess')).toBeUndefined()
   })
 })

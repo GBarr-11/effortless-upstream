@@ -154,7 +154,8 @@ async function loadBuiltIn($: any) {
     const read = await Promise.all(files.map(f => $.fs.read(`${dir}/${f.name}`).catch(() => '')))
     files.forEach((f, i) => found.push({ name: f.name.replace(/\.svg$/, ''), svg: String(read[i]), set: name }))
   }
-  builtIn = found.filter(b => b.svg.includes('<svg') && b.svg.length <= SVG_CAP)
+  // The chess scene is only the settings page's tile: chess is started with /chess, never drawn by the card's rotation.
+  builtIn = found.filter(b => b.set !== INTERACTIVE_CHESS && b.svg.includes('<svg') && b.svg.length <= SVG_CAP)
   // The quotes set is drawn, not read: each quote's card is made the first time something asks for it, then kept.
   for (const [id, text, author] of QUOTES) {
     let made: string | null = null
@@ -507,14 +508,6 @@ async function card($: any, e: any, chat: Chat, step: string) {
   // Minimized: one line in the card's place. (The app's working line under the chat was tried: the desktop does not
   // draw a mod's tree there, so textless vanished.)
   if (isMini(chat)) return miniLine($, e, chat)
-  // The Chess set (under Interactive sets): its one scene is the board, a game started on the first card.
-  if (sceneList()[sceneIndex(chat)]?.set === INTERACTIVE_CHESS) {
-    await chessLoad($)
-    await chessTake($)
-    if (!chessGame) await chessNew($)
-    chessAnchor = 'chat'
-    return chessCard($, e, chat, step)
-  }
   if (chessGame && chessAnchor === 'chat' && (await chessOwns($))) return chessCard($, e, chat, step)
   try {
     const out = await drawCard($, e, chat, step)
