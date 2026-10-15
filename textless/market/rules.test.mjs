@@ -67,3 +67,9 @@ test("form fields are checked and cleaned", () => {
   assert.ok(checkFields({ name: "Rain", author: "Isac", link: "javascript:alert(1)", consent: "yes" }).problems.some(p => p.includes("https")))
   assert.ok(checkFields({ name: "Rain", author: "Isac", email: "nope", consent: "yes" }).problems.some(p => p.includes("email")))
 })
+
+test("a link under any namespace prefix is checked like href", () => {
+  const wrap = body => `<svg xmlns="http://www.w3.org/2000/svg" xmlns:x="http://www.w3.org/1999/xlink" width="100" height="100">${body}</svg>`
+  assert.ok(checkSvg(wrap('<image x:href="https://example.com/p.png" width="10" height="10"/>')).problems.some(p => p.includes("points outside")))
+  assert.ok(checkSvg(wrap('<set attributeName="x:href" to="https://example.com/p.png"/>')).problems.some(p => p.includes("may not animate")))
+})

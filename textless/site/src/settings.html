@@ -335,7 +335,7 @@ $('games').addEventListener('click', function (e) {
   var info = $('gameinfo');
   if (!info.hidden && info.dataset.game === b.dataset.set) { info.hidden = true; return }
   info.dataset.game = b.dataset.set;
-  info.innerHTML = '<b>Chess</b> is played in the chat, not part of the card's scenes. Start it in any chat:<br>'
+  info.innerHTML = '<b>Chess</b> is played in the chat, not one of the card scenes. Start it in any chat:<br>'
     + '<code>/chess</code> start, or open the game in play<br>'
     + '<code>/chess new</code> start over &nbsp; <code>/chess claude</code> play against Claude &nbsp; <code>/chess white</code> or <code>/chess black</code> pick your side &nbsp; <code>/chess end</code> close it<br>'
     + 'While a game is open in a chat, the board takes the card there and the scenes come back when you close it. Other chats keep their scenes. One board at a time: starting it in another chat moves it there.';

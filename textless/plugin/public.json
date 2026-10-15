@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.15.2",
+    "date": "2026-10-16",
+    "note": "A safety fix for community scenes.",
+    "detail": [
+      "Scenes from the marketplace are checked more strictly for links that load from outside the file."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.1",
     "date": "2026-10-16",
     "note": "One chess board at a time, started with /chess.",

@@ -275,3 +275,13 @@ const wleft = wpage.match(/__[A-Z_]+__/)
 if (wleft) throw new Error(`build: ${wleft[0]} was not replaced in whats-new.html`)
 fs.writeFileSync(path.join(whatsDir, "index.html"), wpage)
 console.log(`built site/whats-new/index.html, ${releases.length} releases`)
+
+// Every inline script of every built page must parse: one stray quote broke the whole settings page once.
+for (const rel of ["index.html", "market/index.html", "settings/index.html", "whats-new/index.html"]) {
+  const file = path.join(site, rel)
+  if (!fs.existsSync(file)) continue
+  const html = fs.readFileSync(file, "utf8")
+  for (const m of html.matchAll(/<script(?![^>]*\bsrc=)(?![^>]*type="(?!text\/javascript)[^"]*")[^>]*>([\s\S]*?)<\/script>/g)) {
+    try { new Function(m[1]) } catch (err) { throw new Error(`build: an inline script in ${rel} does not parse: ${err.message}`) }
+  }
+}

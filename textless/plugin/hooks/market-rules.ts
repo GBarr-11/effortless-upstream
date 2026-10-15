@@ -50,11 +50,11 @@ export function checkSvg(text) {
     for (const m of attrs.matchAll(/([\w:.-]+)\s*=\s*("([^"]*)"|'([^']*)')/g)) {
       const key = m[1], value = m[3] ?? m[4] ?? "", k = key.toLowerCase()
       if (k.startsWith("on")) problems.push(`<${name}> has an event handler (${key}); scenes cannot run code`)
-      else if (k === "href" || k === "xlink:href" || k === "src") {
+      else if (/(^|:)(href|src)$/.test(k)) {
         if (!SAFE_HREF.test(value.trim())) problems.push(`<${name} ${key}> points outside the file; only #ids and embedded PNG, GIF, WebP or JPEG are allowed`)
       } else if (BAD_URL.test(value)) problems.push(`<${name} ${key}> uses url() outside the file`)
       else if (/javascript:|expression\s*\(/i.test(value)) problems.push(`<${name} ${key}> holds code`)
-      if ((local === "set" || local.startsWith("animate")) && k === "attributename" && /^(href|xlink:href|on\w+)$/i.test(value)) problems.push(`<${name}> may not animate ${value}`)
+      if ((local === "set" || local.startsWith("animate")) && k === "attributename" && /(^|:)(href|on\w+)$/i.test(value)) problems.push(`<${name}> may not animate ${value}`)
     }
   }
   for (const [, css] of body.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)) {
