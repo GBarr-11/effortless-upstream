@@ -102,7 +102,9 @@ const from = path.join(hooks, "scenes")
 const out = path.join(site, "assets", "scenes")
 fs.rmSync(out, { recursive: true, force: true })
 fs.mkdirSync(out, { recursive: true })
-const SETS = { "": "Clawd", scenery: "Scenery", abstract: "Abstract", paintings: "Paintings", status: "Working" }
+const SETS = { "": "Clawd", scenery: "Scenery", abstract: "Abstract", paintings: "Paintings", status: "Working", chess: "Chess" }
+// Sets that are played, not watched: the settings page lists them under Interactive sets.
+const INTERACTIVE = ["chess"]
 const NAMES = { sit: "Tea", "working-block": "Working, block", "working-sit": "Working, sitting", "working-text": "Working, text" }
 const pretty = id => NAMES[id] ?? (id[0].toUpperCase() + id.slice(1)).replace(/-bare$/, "").replace(/-smooth$/, ", smooth").replace(/-/g, " ")
 const folders = ["", ...fs.readdirSync(from, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name)]
@@ -119,6 +121,14 @@ for (const dir of folders) {
     const id = f.replace(/\.[^.]+$/, "")
     scenes.push({ id, dir: dir || "clawd", set: SETS[dir] ?? dir[0].toUpperCase() + dir.slice(1), name: pretty(id), src: `assets/scenes/${dir ? dir + "/" : ""}${f}`, sq: size ? Number(size[2]) >= Number(size[1]) : false, tall: size ? Number(size[2]) > Number(size[1]) * 1.2 : false })
   }
+}
+// The Quotes set is drawn by the plugin when shown, so no files ship in plugin/hooks/scenes. The site needs them as
+// images, so draw them here, every build: a build that skipped this dropped the set from the settings page and gallery.
+execSync(`node --experimental-strip-types "${path.join(repo, "scripts", "quote-previews.mjs")}" "${path.join(out, "quotes")}"`, { stdio: "inherit" })
+for (const f of fs.readdirSync(path.join(out, "quotes")).filter(f => f.endsWith(".svg")).sort()) {
+  const id = f.replace(/\.svg$/, "")
+  const size = fs.readFileSync(path.join(out, "quotes", f), "utf8").slice(0, 400).match(/width="(\d+)"[^>]*height="(\d+)"/)
+  scenes.push({ id, dir: "quotes", set: "Quotes", name: pretty(id), src: `assets/scenes/quotes/${f}`, sq: size ? Number(size[2]) >= Number(size[1]) : false, tall: size ? Number(size[2]) > Number(size[1]) * 1.2 : false })
 }
 fs.writeFileSync(path.join(site, "assets", "logo.svg"), logo(64, true))
 // Cubit, peeking through: the real clip and sky from the Cubit repo (copied into site/src/cubit), never redrawn.
@@ -236,7 +246,7 @@ const settingsDir = path.join(site, "settings")
 fs.rmSync(settingsDir, { recursive: true, force: true })
 fs.mkdirSync(settingsDir, { recursive: true })
 const setIds = [...new Set(scenes.map(s => s.dir))].sort((a, b) => (a === "clawd" ? -1 : b === "clawd" ? 1 : 0))
-const settingsSets = [...setIds.map(id => ({ id, name: scenes.find(s => s.dir === id).set })), { id: "yours", name: "Your own" }]
+const settingsSets = [...setIds.map(id => ({ id, name: scenes.find(s => s.dir === id).set, ...(INTERACTIVE.includes(id) ? { interactive: true } : {}) })), { id: "yours", name: "Your own" }]
 let spage = fs.readFileSync(path.join(here, "settings.html"), "utf8")
 const smap = {
   __STYLE__: style, __ICON__: map.__ICON__, __LOGO__: map.__LOGO__, __API__: mmap.__API__,

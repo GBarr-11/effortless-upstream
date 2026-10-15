@@ -48,6 +48,7 @@ __STYLE__
 .opt+.opt{border-top:1px solid var(--line)}
 .opt:hover{background:#221d1a}
 .opt input{width:20px;height:20px;margin:2px 0 0;accent-color:#d97757;flex-shrink:0}
+.opt .exp{display:inline-block;margin-left:8px;padding:1px 7px;border-radius:999px;border:1px solid #6b3d2c;color:var(--orange);font:600 11px var(--sans);letter-spacing:.04em;text-transform:uppercase;vertical-align:2px}
 .opt b{display:block;color:var(--paper);font:500 15.5px var(--sans)}
 .opt .d{display:block;margin-top:4px;color:var(--mute);font-size:14px}
 .own-note .copy{margin-left:8px;height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--paper);font:500 14px var(--sans);cursor:pointer}
@@ -132,15 +133,19 @@ __STYLE__
   <div class="nokey" id="nokey" hidden>Open this page with the ⚙ next to the textless icon in Claude Code. The link it opens tells the page which computer to save for.</div>
 
   <section class="picker" id="picker" hidden>
-    <h2 id="sum-h">Options</h2>
-    <div class="opts" role="group" aria-labelledby="sum-h">
-      <label class="opt"><input type="checkbox" id="summary"><span><b>Questions, links and next step under answers</b><span class="d">When Claude asks you something, the questions show as a numbered list under its answer and leave the answer text. Off, answers stay exactly as Claude wrote them.</span></span></label>
+    <!-- Parked with the answer cards (branch backup/answer-cards): textless only draws art for now. -->
+    <h2 id="sum-h" style="display:none">Options</h2>
+    <div class="opts" style="display:none" role="group" aria-labelledby="sum-h">
+      <label class="opt"><input type="checkbox" id="summary"><span><b>Under answers: the done line, questions, links and next step <span class="exp">Experimental</span></b><span class="d">The line with the steps and time, and when Claude asks you something, the questions as a numbered list that leave the answer text. Off, answers stay as Claude wrote them, with only a small show steps link under them.</span></span></label>
+      <label class="opt"><input type="checkbox" id="cover"><span><b>Cover the chat when Claude is done <span class="exp">Experimental</span></b><span class="d">A tidy screen: once Claude finishes, the whole chat hides behind one big card that says whose move it is. Show the chat on the card brings it back until you send the next message.</span></span></label>
     </div>
 
     <h2>Set</h2>
     <p class="note">The card goes through the scenes of one set, a new one each time Claude starts working.</p>
     <h3 class="group">textless sets</h3>
     <div class="sets" id="sets" role="group" aria-label="textless sets"></div>
+    <h3 class="group">Interactive sets</h3>
+    <div class="sets" id="games" role="group" aria-label="Interactive sets"></div>
     <h3 class="group">Your sets</h3>
     <div class="sets" id="mysets" role="group" aria-label="Your sets"></div>
 
@@ -185,7 +190,7 @@ var OWN = window.TEXTLESS_OWN || null;
 var HASH = location.hash || (window.TEXTLESS_HASH ? '#' + window.TEXTLESS_HASH : '');
 if (OWN) OWN.forEach(function (o) { SCENES.push({ id: o.id, dir: 'yours', name: o.name, src: o.src }) });
 var key = (HASH.match(/k=([0-9a-f]{32})/) || [])[1];
-var state = { set: 'clawd', scene: null, summary: true, mixes: [] }, saved = null;
+var state = { set: 'clawd', scene: null, summary: true, cover: false, mixes: [] }, saved = null;
 // The set being edited, or null.
 var editing = null;
 // The plugin's copy of the page knows the real folder; the website guesses the usual place.
@@ -196,7 +201,7 @@ function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&
 function inSet(set) { return SCENES.filter(function (s) { return s.dir === set }) }
 function mixOf(id) { return state.mixes.filter(function (m) { return m.id === id })[0] }
 function setName(set) { var m = mixOf(set); if (m) return m.name; var f = SETS.filter(function (s) { return s.id === set })[0]; return f ? f.name : set }
-function same(a, b) { return a && b && a.set === b.set && a.scene === b.scene && a.summary === b.summary && JSON.stringify(a.mixes) === JSON.stringify(b.mixes) }
+function same(a, b) { return a && b && a.set === b.set && a.scene === b.scene && a.summary === b.summary && a.cover === b.cover && JSON.stringify(a.mixes) === JSON.stringify(b.mixes) }
 // A scene's place, the way the plugin names it: "<set>/<scene>".
 function refOf(s) { return s.dir + '/' + s.id }
 // A made set's scenes, in the order they were ticked. A picture of the person's own the page cannot see (the site, not
@@ -235,7 +240,7 @@ function makePrompt() {
   ].join('\n');
 }
 function inSetOrMix(set) { var m = mixOf(set); return m ? mixScenes(m) : inSet(set) }
-function copy(st) { return { set: st.set, scene: st.scene, summary: st.summary, mixes: JSON.parse(JSON.stringify(st.mixes)) } }
+function copy(st) { return { set: st.set, scene: st.scene, summary: st.summary, cover: !!st.cover, mixes: JSON.parse(JSON.stringify(st.mixes)) } }
 function tile(s, extra) {
   var art = s.src ? '<img src="' + esc(s.src) + '" alt="" loading="lazy">' : '<span class="ph">your own: ' + esc(s.name) + '</span>';
   return '<span class="art' + (s.dir === 'clawd' ? ' big' : '') + '">' + art + '</span>' + (extra || '');
@@ -250,7 +255,8 @@ function draw() {
     var n = s.id === 'yours' && !OWN ? '<span class="n">your folder</span>' : '<span class="n">' + list.length + (list.length === 1 ? ' scene' : ' scenes') + '</span>';
     return '<button type="button" data-set="' + esc(s.id) + '" aria-pressed="' + (state.set === s.id) + '">' + shot + '<span>' + esc(s.name) + '</span>' + n + '</button>';
   }
-  $('sets').innerHTML = SETS.filter(function (s) { return s.id !== 'yours' }).map(setTile).join('');
+  $('sets').innerHTML = SETS.filter(function (s) { return s.id !== 'yours' && !s.interactive }).map(setTile).join('');
+  $('games').innerHTML = SETS.filter(function (s) { return s.interactive }).map(setTile).join('');
   var fav = mixOf(FAV);
   $('mysets').innerHTML = (fav ? '<button type="button" class="mine fav" data-set="' + FAV + '" aria-pressed="' + (state.set === FAV) + '"><span class="shot" aria-hidden="true">★</span><span>Favorites</span><span class="n">' + fav.scenes.length + (fav.scenes.length === 1 ? ' scene' : ' scenes') + '</span></button>' : '')
     + SETS.filter(function (s) { return s.id === 'yours' }).map(setTile).join('') + state.mixes.filter(function (m) { return m.id !== FAV }).map(function (m) {
@@ -297,6 +303,7 @@ function draw() {
   var pickedName = state.scene === null ? 'a new one each time' : (list.filter(function (s) { return s.id === state.scene })[0] || { name: state.scene }).name;
   $('what').innerHTML = '<b>' + esc(setName(state.set)) + '</b>, ' + esc(pickedName);
   $('summary').checked = state.summary !== false;
+  $('cover').checked = !!state.cover;
   $('save').disabled = same(state, saved);
   if (!same(state, saved)) { $('msg').textContent = ''; $('msg').className = 'msg' }
 }
@@ -322,6 +329,7 @@ function pickSet(e) {
 }
 $('sets').addEventListener('click', pickSet);
 $('mysets').addEventListener('click', pickSet);
+$('games').addEventListener('click', pickSet);
 $('grid').addEventListener('click', function (e) {
   var st = e.target.closest('button[data-star]');
   if (st) {
@@ -449,6 +457,9 @@ $('zone').addEventListener('drop', function (e) { e.preventDefault(); take(e.dat
 // A picture dropped next to the zone must not replace the page.
 window.addEventListener('dragover', function (e) { e.preventDefault() });
 window.addEventListener('drop', function (e) { e.preventDefault() });
+$('cover').addEventListener('change', function (e) {
+  state = copy(state); state.cover = e.target.checked; draw();
+});
 $('summary').addEventListener('change', function (e) {
   state = copy(state); state.summary = e.target.checked; draw();
 });
@@ -469,7 +480,7 @@ else {
   $('picker').hidden = false; $('bar').hidden = false;
   // The ⚙ link carries what the plugin shows now, so the page opens on it even before anything was saved here.
   var from = new URLSearchParams(HASH.slice(1));
-  if (from.get('set')) state = { set: from.get('set'), scene: from.get('scene') || null, summary: from.get('summary') !== '0', mixes: [] };
+  if (from.get('set')) state = { set: from.get('set'), scene: from.get('scene') || null, summary: from.get('summary') !== '0', cover: from.get('cover') === '1', mixes: [] };
   saved = copy(state);
   draw();
   // The sets the person made live with the saved settings: read them, then show the set the plugin plays.

@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import { ANSWERS } from './register'
 
 // The settings page on the website: the ⚙ opens it with this computer's key, and what it saves reaches every chat.
 const API = 'https://textless-market.isac-ehrstedt.workers.dev'
@@ -27,15 +28,22 @@ function fakeHost(on: any, saved: () => unknown) {
   return { store, ran, fetched }
 }
 
+// textless's buttons sit under the newest answer: finish a turn, then draw that answer.
+async function buttonsRow($: any, on: any) {
+  on('turn.complete', () => ({ text: '' }))
+  await $.turn.complete({ answer: 'Done.', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't' })
+  return $.ui.mount({ plugin: 'textless', surface: 'desktop', component: 'AssistantMessage', props: { text: 'Done.' } })
+}
+
 describe('settings on the website', () => {
   test('the gear opens the settings page with a new key for this computer, kept for next time', async ($, on) => {
     const host = fakeHost(on, () => undefined)
     mock.clock(on)
-    const strip: any = await ($ as any).ui.mount({ plugin: 'textless', surface: 'desktop', component: 'SessionMode', props: {} })
+    const strip: any = await buttonsRow($, on)
     await strip.press({ key: 'textless-settings' })
     const url = host.ran[0]?.[2] ?? ''
     expect(host.ran[0]?.slice(0, 2)).toEqual(['rundll32', 'url.dll,FileProtocolHandler'])
-    expect(url).toMatch(/^https:\/\/textless-preview\.isac-ehrstedt\.workers\.dev\/settings\/#k=[0-9a-f]{32}&set=clawd&scene=&summary=1$/)
+    expect(url).toMatch(new RegExp(`^https://textless-preview\\.isac-ehrstedt\\.workers\\.dev/settings/#k=[0-9a-f]{32}&set=clawd&scene=&summary=${ANSWERS ? 1 : 0}&cover=0$`))
     expect(host.store.get('syncKey')).toBe(url.match(/k=([0-9a-f]{32})/)?.[1])
   })
 
@@ -44,7 +52,7 @@ describe('settings on the website', () => {
     const host = fakeHost(on, () => saved)
     const clock = mock.clock(on)
     host.store.set('syncKey', KEY)
-    await ($ as any).ui.mount({ plugin: 'textless', surface: 'desktop', component: 'SessionMode', props: {} })
+    await buttonsRow($, on)
     await clock.advance(2000)
     expect(host.store.get('set')).toBe('clawd')
     expect(host.store.get('remoteUpdated')).toBe(100)
@@ -65,7 +73,7 @@ describe('settings on the website', () => {
     const host = fakeHost(on, () => ({ ok: true, set: 'mix-calm1', scene: null, mixes: [mix], updated: 100 }))
     const clock = mock.clock(on)
     host.store.set('syncKey', KEY)
-    await ($ as any).ui.mount({ plugin: 'textless', surface: 'desktop', component: 'SessionMode', props: {} })
+    await buttonsRow($, on)
     await clock.advance(2000)
     expect(host.store.get('set')).toBe('mix-calm1')
     expect(host.store.get('mixes')).toEqual([mix])
@@ -78,7 +86,7 @@ describe('settings on the website', () => {
   test('nothing is fetched before the page was ever opened', async ($, on) => {
     const { fetched } = fakeHost(on, () => undefined)
     const clock = mock.clock(on)
-    await ($ as any).ui.mount({ plugin: 'textless', surface: 'desktop', component: 'SessionMode', props: {} })
+    await buttonsRow($, on)
     await clock.advance(130_000)
     expect(fetched.filter(u => u.includes('/settings/')).length).toBe(0)
   })

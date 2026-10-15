@@ -76,7 +76,7 @@ describe('quotes on the card', () => {
       await new Promise(res => setTimeout(res, 1600))
       const row: any = await e.ui.mount({ plugin: 'textless', surface: 'desktop', component: 'ToolUse', props: { tool_use_id: `q${n}`, tool: 'Bash', input: {}, isRunning: true } })
       await clock.advance(3500)
-      const node: any = await row.find({ type: 'Svg' })
+      const node: any = (await row.findAll({ type: 'Svg' })).find((n: any) => (n?.props?.alt ?? n?.alt) === 'Claude working')
       const svg = String(node?.props?.source ?? node?.source ?? '')
       await e.turn.complete({ answer: 'done', reason: 'answer', durationMs: 9000, isAborted: false, turnId: `t${n}` })
       return svg

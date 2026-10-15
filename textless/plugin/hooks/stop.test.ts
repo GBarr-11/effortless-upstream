@@ -62,8 +62,9 @@ describe('an answer a Stop hook sent back', () => {
     await text(e, LAST)
     await e.turn.complete({ answer: LAST, reason: 'answer', durationMs: 5000, isAborted: false, turnId: 'y' })
     expect(await shown(await text(e, BETWEEN))).toBe(false)
-    const strip: any = await e.ui.mount({ plugin: 'textless', surface: 'desktop', component: 'SessionMode', props: {} })
-    await strip.press({ key: 'textless' })
+    // The switch sits on the row under the newest answer.
+    const answer: any = await text(e, LAST)
+    await answer.press({ key: 'textless-switch' })
     expect(await shown(await text(e, BETWEEN))).toBe(true)
   })
 })

@@ -299,6 +299,8 @@ async function saveSettings(request, env, key, json) {
   const scene = body?.scene === null || body?.scene === undefined ? null : String(body.scene)
   // Whether the questions, links and next step show under answers; absent keeps what the plugin has.
   const summary = typeof body?.summary === "boolean" ? body.summary : undefined
+  // Cover mode: a finished chat hides behind one big card; absent keeps what the plugin has.
+  const cover = typeof body?.cover === "boolean" ? body.cover : undefined
   if (!SET_NAME.test(set) || (scene !== null && !SCENE_NAME.test(scene))) return json(400, { ok: false, error: "bad-settings" })
   let mixes = cleanMixes(body?.mixes)
   if (mixes === null) return json(400, { ok: false, error: "bad-sets" })
@@ -309,8 +311,8 @@ async function saveSettings(request, env, key, json) {
   }
   const updated = Date.now()
   await env.DB.prepare("INSERT INTO settings (key, data, updated) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated = excluded.updated")
-    .bind(key, JSON.stringify({ set, scene, summary, mixes }), updated).run()
-  return json(200, { ok: true, set, scene, summary, mixes, updated })
+    .bind(key, JSON.stringify({ set, scene, summary, cover, mixes }), updated).run()
+  return json(200, { ok: true, set, scene, summary, cover, mixes, updated })
 }
 
 async function queue(env) {

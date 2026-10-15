@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import { ANSWERS } from './register'
 
 // How much work textless adds to drawing the chat: a turn's rows while the card shows, and a finished turn's answer
 // with its question list, each drawn many times as the app redraws.
@@ -57,6 +58,7 @@ describe('cost of drawing', () => {
 
 describe('the note on questions', () => {
   test('goes with the first message of a chat and then every 20th, not with each one', async ($, on) => {
+    if (!ANSWERS) return // parked: see backup/answer-cards
     const seen: boolean[] = []
     fakeHost(on, e => seen.push(((e.context ?? []) as string[]).some(c => c.startsWith('textless shows each question'))))
     mock.clock(on)

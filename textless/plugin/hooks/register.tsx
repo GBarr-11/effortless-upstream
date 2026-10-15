@@ -1,5 +1,6 @@
 import type { Register } from 'claude-code'
 import { SCENES } from './art'
+import { bestMove, CHESS_LEVELS, type ChessLevel } from './chess-engine'
 import { describe as describeMove, legalMoves, type Move, outcome, type Outcome, parseFen, picture, play, type Position, START, squareName, toFen, uci } from './chess-rules'
 import { checkFile } from './market-rules'
 import { onceMs, quoteCard, stillCard } from './quill'
@@ -50,6 +51,15 @@ type Chat = {
   // Messages the person sent in this chat, and the one that last carried the note on questions.
   prompts: number
   hintedAt: number | null
+  // Cover mode: the text block the big card takes the place of, and its word. undefined: not read from the store yet.
+  cover?: { host: string; word: string; asks?: string[]; recs?: string[] } | null
+  // Show the chat was pressed: this chat stays uncovered, with textless on, until Claude starts on the next message.
+  uncovered?: boolean
+  // The chat's title as the app names it, for the cover card: which chat is this.
+  title?: string
+  // A planning turn (a document written, plan mode left): textless steps aside for it. The step that showed it carries
+  // the small label.
+  planKey?: string
   startedAt: number
   // Steps that ran during this turn, oldest first; only these can carry the card. Rows of earlier turns are redrawn
   // by the same invalidate, and they never ran in this turn, so they draw as usual.
@@ -58,6 +68,20 @@ type Chat = {
   cardKey: string
   timer: { cancel: () => void } | null
   ticker: { cancel: () => void } | null
+  // The last finished turn's answer: textless's buttons sit under it, on or off. Kept per chat in the store.
+  newest: string
+  // The folded turn that ended last (its index in `done`), or -1 when the last turn was a quick one: the buttons sit on
+  // its row even when it has no answer to hang them under (a stopped turn).
+  newestAt: number
+  // The scene this turn shows (an index into sceneList), chosen when the turn starts; -1 before that.
+  sceneAt: number
+  // Background work still running when the turn's answer came (from the Stop hook), by id: the newest answer's row
+  // names it until each task's notification says it ended.
+  background: { id: string; description: string }[]
+  // Claude keeps a task list this turn: the app draws it under the card, so the card goes to one line unless the
+  // person asked for full size this turn.
+  listed?: boolean
+  fullAnyway?: boolean
 }
 const chats = new Map<string, Chat>()
 // Off for every chat when the person turns it off with the icon or /textless; kept in the mod's store.
@@ -338,9 +362,11 @@ async function chatOf($: any): Promise<Chat> {
   const id = String(await $.session.id().catch(() => ''))
   let chat = chats.get(id)
   if (!chat) {
-    chat = { on: true, running: false, working: false, long: false, prompt: '', underPrompt: false, turnTexts: new Set<string>(), lastText: '', kept: [], baselineUntil: 0, answer: '', durationMs: 0, longAt: 0, agents: new Set<string>(), mainDone: false, stopped: false, turns: 0, prompts: 0, hintedAt: null, startedAt: 0, steps: [], cardKey: '', timer: null, ticker: null }
+    chat = { on: true, running: false, working: false, long: false, prompt: '', underPrompt: false, turnTexts: new Set<string>(), lastText: '', kept: [], baselineUntil: 0, answer: '', durationMs: 0, longAt: 0, agents: new Set<string>(), mainDone: false, stopped: false, turns: 0, prompts: 0, hintedAt: null, startedAt: 0, steps: [], cardKey: '', timer: null, ticker: null, newest: '', newestAt: -1, sceneAt: -1, background: [] }
     chats.set(id, chat)
     chat.on = (await $.store.get(`on:${id}`).catch(() => null)) !== false
+    const newest = await $.store.get(`newest:${id}`).catch(() => null)
+    chat.newest = typeof newest === 'string' ? newest : ''
   }
   return chat
 }
@@ -449,7 +475,26 @@ function sceneList() {
 
 function sceneIndex(chat: Chat) {
   const n = sceneList().length
-  return pick !== null ? pick % n : (Math.max(1, chat.turns) - 1) % n
+  if (pick !== null) return pick % n
+  return chat.sceneAt >= 0 && chat.sceneAt < n ? chat.sceneAt : (Math.max(1, chat.turns) - 1) % n
+}
+
+// Which scene a new turn shows: random, but never one of the last RECENT_SCENES shown in any chat (at most half the
+// set, so a set of three still changes every turn). A fixed order by turn number gave every new chat the same first
+// few scenes and left the end of a long set unseen. A scene picked by hand (pick) wins and is not drawn here.
+const RECENT_SCENES = 50
+let recentScenes: string[] = []
+function chooseScene($: any): number {
+  const list = sceneList()
+  const key = (i: number) => `${list[i].set}/${list[i].name}`
+  const window = Math.min(RECENT_SCENES, Math.floor(list.length / 2))
+  const avoid = new Set(recentScenes.slice(-window))
+  const fresh = list.map((_, i) => i).filter(i => !avoid.has(key(i)))
+  const pool = fresh.length > 0 ? fresh : list.map((_, i) => i)
+  const at = pool[Math.floor(Math.random() * pool.length)]
+  recentScenes = [...recentScenes.filter(k => k !== key(at)), key(at)].slice(-200)
+  void $.store.set('recentScenes', recentScenes).catch(() => undefined)
+  return at
 }
 
 // SMIL's own clock: each animation begins that many seconds in the past. One that names its own begin keeps it.
@@ -459,6 +504,17 @@ function inPhase(svg: string, elapsedMs: number) {
 }
 
 async function card($: any, e: any, chat: Chat, step: string) {
+  // Minimized: one line in the card's place. (The app's working line under the chat was tried: the desktop does not
+  // draw a mod's tree there, so textless vanished.)
+  if (isMini(chat)) return miniLine($, e, chat)
+  // The Chess set (under Interactive sets): its one scene is the board, a game started on the first card.
+  if (sceneList()[sceneIndex(chat)]?.set === INTERACTIVE_CHESS) {
+    await chessLoad($)
+    if (!chessGame) await chessNew($)
+    chessAnchor = 'chat'
+    return chessCard($, e, chat, step)
+  }
+  if (chessGame && chessAnchor === 'chat') return chessCard($, e, chat, step)
   try {
     const out = await drawCard($, e, chat, step)
     dbg($, `card drawn scenes=${sceneList().length} svg=${Boolean(($.ui.resolve(e) as any).Svg)}`)
@@ -470,8 +526,12 @@ async function card($: any, e: any, chat: Chat, step: string) {
   }
 }
 
+// Sets that are played, not watched. The settings page lists them under Interactive sets.
+const INTERACTIVE_CHESS = 'chess'
+
 async function drawCard($: any, e: any, chat: Chat, step: string) {
-  const { Box, Text, Svg } = $.ui.resolve(e) as Record<string, any>
+  const { Box, Text, Svg, Button } = $.ui.resolve(e) as Record<string, any>
+  await refreshTheme($)
   // Every redraw starts the image's animation over; starting each one as far in as the card has been showing makes
   // the restart land where the last drawing was, so it cannot be seen.
   const scene = sceneList()[sceneIndex(chat)]
@@ -501,12 +561,186 @@ async function drawCard($: any, e: any, chat: Chat, step: string) {
   const fit = contain ? 'xMidYMid meet' : 'xMidYMid slice'
   const cover = art.replace(/<svg\b([^>]*?)\s*preserveAspectRatio="[^"]*"/, '<svg$1').replace(/<svg\b/, `<svg preserveAspectRatio="${fit}"`)
   return (
-    <Box key="textless" flexDirection="column" alignItems="center" paddingY={1}>
+    <Box key="textless" flexDirection="column" alignItems="center" paddingBottom={1}>
+      {/* The switch, the settings (another scene mid-turn) and minimize sit in the row the top padding took, so the card is no taller for them. */}
+      <Box key="textless-top" flexDirection="row" justifyContent="flex-end" width="100%" height={1}>
+        {Button ? controls($, e) : null}
+        {Button ? sizeButton($, e, 'minimize') : null}
+      </Box>
       {Svg ? <Svg source={cover} alt="Claude working" width={fitW} height={ART_H} /> : null}
       {/* Answered while a background task runs: Claude still has work under way, so it is not the person's turn yet. */}
       <Text color="#d97757" bold wrap="truncate">Claude is working</Text>
-      <Text dimColor wrap="truncate">{chat.mainDone ? 'Waiting for a background task' : step}</Text>
+      <Text dimColor wrap="truncate">{chat.mainDone ? waitingFor(chat) : step}</Text>
       {maker ? <Text key="textless-credit" color="#6e6660" wrap="truncate">{`${maker.name} · by ${maker.author}`}</Text> : null}
+    </Box>
+  )
+}
+
+// The turn has answered while background work runs: the card hangs under the answer, not up among the steps.
+function cardUnderAnswer(chat: Chat) {
+  return chat.mainDone && chat.long && chat.answer.trim() !== ''
+}
+
+// What the turn still waits on once its answer is in: the background tasks by name, or the subagents.
+function waitingFor(chat: Chat) {
+  const n = chat.background.length
+  if (n === 0) return 'Waiting for a background task'
+  return `Waiting for ${n} background task${n === 1 ? '' : 's'}: ${chat.background.map(t => t.description).join(', ')}`
+}
+// The same, after the turn: on the newest answer's row, until the last one ends.
+function backgroundLine($: any, e: any, chat: Chat) {
+  const { Box, Text } = $.ui.resolve(e) as Record<string, any>
+  const n = chat.background.length
+  if (n === 0) return null
+  return (
+    <Box key="textless-background" flexShrink={1} minWidth={0} marginLeft={1}>
+      <Text dimColor wrap="truncate">{`${n} background task${n === 1 ? '' : 's'} running: ${chat.background.map(t => t.description).join(', ')}`}</Text>
+    </Box>
+  )
+}
+
+// Minimize (two arrows pointing in) and full size (two arrows pointing out), drawn, in the same spot on both looks.
+// Like "Aa": the icon in the flow, a blank button over it for the click, its hover clear and a lighter copy of the icon
+// shown under the pointer instead.
+function sizeIcon(kind: 'minimize' | 'expand', color: string) {
+  const paths = kind === 'minimize'
+    ? 'M14 2 9.5 6.5M9.5 3v3.5H13M2 14l4.5-4.5M3 9.5h3.5V13'
+    : 'M9.5 6.5 14 2M10 2h4v4M6.5 9.5 2 14M2 10v4h4'
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><path d="${paths}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+}
+function sizeButton($: any, e: any, kind: 'minimize' | 'expand') {
+  const { Box, Svg, Button } = $.ui.resolve(e) as Record<string, any>
+  const key = `textless-${kind}`
+  const press = async () => {
+    const chat = await chatOf($)
+    // Full size on a turn with a task list holds for this turn; the choice for every turn stays as it was.
+    if (kind === 'expand' && !mini) chat.fullAnyway = true
+    else if (kind === 'minimize' && chat.listed) chat.fullAnyway = false
+    if (kind === 'expand' && mini) await setMini($, false)
+    else if (kind === 'minimize' && !chat.listed) await setMini($, true)
+    else $.ui.invalidate('ui.render')
+  }
+  if (!Svg) return <Button key={key} plain dimColor label={kind === 'minimize' ? ' ⤡ ' : ' ⤢ '} onPress={press} />
+  return (
+    <Box key={`${key}-box`} flexDirection="row" alignItems="center" justifyContent="center" paddingX={1}>
+      <Svg source={sizeIcon(kind, isLight ? '#8a8580' : '#8b8b93')} alt={kind === 'minimize' ? 'Minimize' : 'Full size'} width={14} height={14} />
+      <Box position="absolute" top={0} bottom={0} left={0} right={0} alignItems="center" justifyContent="center" display="none" hover={{ scope: key, display: 'flex' }}>
+        <Svg source={sizeIcon(kind, isLight ? '#1a1a1a' : '#f2f2f2')} alt={kind === 'minimize' ? 'Minimize' : 'Full size'} width={14} height={14} />
+      </Box>
+      <Box position="absolute" top={0} bottom={0} left={0} right={0} alignItems="center" justifyContent="center">
+        <Button key={key} plain label={' '.repeat(3)} hover={{ scope: key, backgroundColor: '#00000000' }} onPress={press} />
+      </Box>
+    </Box>
+  )
+}
+
+async function miniLine($: any, e: any, chat: Chat) {
+  await refreshTheme($)
+  const { Box, Text } = $.ui.resolve(e) as Record<string, any>
+  return (
+    <Box key="textless" flexDirection="row" alignItems="center" gap={1}>
+      <Text color="#d97757" bold>textless</Text>
+      <Box flexShrink={1} minWidth={0}>
+        <Text dimColor wrap="truncate">{chat.mainDone ? waitingFor(chat) : 'minimized'}</Text>
+      </Box>
+      <Box flexGrow={1} />
+      {/* No gap between the buttons, as on the big card: the row's own gap spread them. */}
+      <Box flexDirection="row" alignItems="center">
+        {controls($, e)}
+        {sizeButton($, e, 'expand')}
+      </Box>
+    </Box>
+  )
+}
+
+// Text said between steps is hidden, but the app can keep a row it drew while the text was still arriving (a card on
+// top and the text under it until something redraws). Once the text stops changing, every row is drawn once more.
+let settling: { cancel: () => void } | null = null
+function settleText($: any) {
+  settling?.cancel()
+  settling = $.clock.after(700, () => { settling = null; $.ui.invalidate('ui.render') })
+}
+
+// Switched off while Claude works: the row the card sat in is drawn as the app draws it, with one line under it holding
+// the grey Aa and the gear, so the way back on stays where the card was instead of moving up the chat.
+async function offRow($: any, e: any, chat: Chat, isCardRow: boolean, next: any) {
+  const inner = await next(e)
+  if (!chat.running || !isCardRow) return inner
+  await refreshTheme($)
+  const { Box } = $.ui.resolve(e) as Record<string, any>
+  const drawn = { chat, id: String(await $.session.id().catch(() => '')) }
+  return (
+    <Box key="textless-off-row" flexDirection="column">
+      {inner}
+      <Box flexDirection="row" alignItems="center">
+        <Box flexGrow={1} />
+        {controls($, e, drawn)}
+      </Box>
+    </Box>
+  )
+}
+
+// The card minimized to one line, for every chat; kept in the store.
+let mini = false
+// One line now: minimized, or a turn with a task list (the app's own, drawn under the card).
+const LIST_TOOLS = /^(TodoWrite|TaskCreate|TaskUpdate)$/
+function isMini(chat: Chat) {
+  return mini || (Boolean(chat.listed) && !chat.fullAnyway)
+}
+function noteList($: any, chat: Chat, tool: unknown) {
+  if (!chat.working || chat.listed || !LIST_TOOLS.test(String(tool ?? ''))) return
+  chat.listed = true
+  void Promise.resolve().then(() => $.ui.invalidate('ui.render')).catch(() => undefined)
+}
+async function setMini($: any, on: boolean) {
+  mini = on
+  await $.store.set('mini', on).catch(() => undefined)
+  $.ui.invalidate('ui.render')
+}
+
+// textless's two buttons: "Aa" switches it on or off in this chat, the gear opens the settings. They sit on the
+// minimized card and under the newest answer, never in a row of their own under the prompt.
+// A Button cannot be coloured, so "Aa" is text (Clawd orange, bold and struck through while textless hides the steps,
+// plain grey while off) with a blank button laid over it to take the click.
+// The button's own hover box is clear: drawn over the text it hid it; the text lights up instead.
+function controls($: any, e: any, drawn?: { chat: Chat; id: string }) {
+  const { Box, Text, Button } = $.ui.resolve(e) as Record<string, any>
+  const on = drawn ? drawn.chat.on : true
+  return [
+    <Box key="textless-switch-box" flexDirection="row" alignItems="center" paddingX={1}>
+      <Text color={on ? '#d77757' : undefined} dimColor={!on} bold={on} strikethrough={on} hover={{ scope: 'textless-switch', color: on ? '#f0a080' : hoverText() }}>Aa</Text>
+      <Box position="absolute" top={0} bottom={0} left={0} right={0} alignItems="center" justifyContent="center">
+        <Button key="textless-switch" plain label={' '.repeat(3)} hover={{ scope: 'textless-switch', backgroundColor: '#00000000' }} onPress={() => toggle($, undefined, drawn)} />
+      </Box>
+    </Box>,
+    <Button key="textless-settings" plain dimColor label=" ⚙︎ " hover={{ scope: 'textless-settings', backgroundColor: hoverBg() }} onPress={() => openWebSettings($)} />,
+  ]
+}
+
+// Under the newest answer: the answer as drawn, then one row with the buttons at its end ("Aa" says on or off).
+function isNewest(chat: Chat, text: string) {
+  const answer = chat.newest.trim()
+  const block = text.trim()
+  return Boolean(answer && block && answer.endsWith(block))
+}
+async function newestRow($: any, e: any, inner: unknown, left?: unknown) {
+  await setUp($)
+  const { Box } = $.ui.resolve(e) as Record<string, any>
+  await refreshTheme($)
+  const drawn = { chat: await chatOf($), id: String(await $.session.id().catch(() => '')) }
+  const row = (
+    <Box key="textless-newest" flexDirection="row" alignItems="center">
+      {left ?? null}
+      {backgroundLine($, e, drawn.chat)}
+      <Box flexGrow={1} />
+      {controls($, e, drawn)}
+    </Box>
+  )
+  return (
+    <Box key="textless-answer" flexDirection="column" gap={1}>
+      {inner}
+      {row}
+      {chessBelow($, e)}
     </Box>
   )
 }
@@ -519,8 +753,14 @@ async function openSettings($: any) {
 
 // The settings page on the website. This computer gets a random key the first time; the page saves under it on the
 // market Worker and every chat reads it back from there, so nothing has to be pasted.
+// Parked: textless draws art only and leaves answers alone. The cover card, the questions, links and next step under
+// answers, and the note telling Claude how to word questions all stay off while this is false. The full version lives
+// on the branch backup/answer-cards (tag answer-cards-backup).
+export const ANSWERS = false
 // Questions, links and the next step under a finished answer; /textless summary off leaves only the done line.
-let summaryOn = true
+let summaryOn = ANSWERS
+// Cover mode: once Claude is done, the whole chat hides behind one big card saying whose move it is. Off by default.
+let coverOn = false
 let syncKey = ''
 let remoteUpdated = 0
 let watchUntil = 0
@@ -543,7 +783,7 @@ async function openWebSettings($: any) {
   const { site } = await marketUrls($)
   const scene = pick !== null ? sceneList()[pick % sceneList().length]?.name ?? '' : ''
   const page = new URL('../settings/', site).href
-  const hash = `k=${await keyOf($)}&set=${encodeURIComponent(set)}&scene=${encodeURIComponent(scene)}&summary=${summaryOn ? 1 : 0}`
+  const hash = `k=${await keyOf($)}&set=${encodeURIComponent(set)}&scene=${encodeURIComponent(scene)}&summary=${summaryOn ? 1 : 0}&cover=${coverOn ? 1 : 0}`
   let url = `${page}#${hash}`
   // The page cannot read this computer, so the plugin writes a copy of it here with the person's own scenes in it
   // and opens that: their pictures never leave the computer, only the pick is saved (as from the site). Offline, or
@@ -601,9 +841,13 @@ async function pullSettings($: any) {
   await loadOwn($)
   await loadBuiltIn($)
   // The questions list under answers, on or off for every chat, when the page sent it.
-  if (typeof got.summary === 'boolean' && got.summary !== summaryOn) {
+  if (ANSWERS && typeof got.summary === 'boolean' && got.summary !== summaryOn) {
     summaryOn = got.summary
     await $.store.set('summary', summaryOn).catch(() => undefined)
+  }
+  if (ANSWERS && typeof got.cover === 'boolean' && got.cover !== coverOn) {
+    coverOn = got.cover
+    await $.store.set('cover', coverOn).catch(() => undefined)
   }
   if (Array.isArray(got.mixes)) {
     mixes = keptMixes(got.mixes)
@@ -674,10 +918,14 @@ async function setUp($: any) {
   if (registered) return
   registered = true
   const kept = await $.store.get('pick').catch(() => null)
+  mini = (await $.store.get('mini').catch(() => null)) === true
+  const seen = await $.store.get('recentScenes').catch(() => null)
+  recentScenes = Array.isArray(seen) ? seen.filter((k: unknown) => typeof k === 'string').slice(-200) : []
   pick = typeof kept === 'number' ? kept : null
   const keptSet = await $.store.get('set').catch(() => null)
   set = typeof keptSet === 'string' && keptSet ? keptSet : CLAWD_SET
-  summaryOn = (await $.store.get('summary').catch(() => null)) !== false
+  summaryOn = ANSWERS && (await $.store.get('summary').catch(() => null)) !== false
+  coverOn = ANSWERS && (await $.store.get('cover').catch(() => null)) === true
   mixes = keptMixes(await $.store.get('mixes').catch(() => null))
   const keptNames = await $.store.get('marketNames').catch(() => null)
   marketNames = keptNames && typeof keptNames === 'object' ? keptNames : {}
@@ -756,11 +1004,115 @@ async function loadDone($: any) {
   if (kept.length) $.ui.invalidate('ui.render')
 }
 
+// Cover mode is on for this chat: textless is on here and the setting is on.
+// Like the work card, only a turn that ran long enough for the card is covered: a quick answer leaves the chat as it is.
+const covering = (chat: Chat) => chat.on && coverOn && !chat.uncovered && (chat.working ? chat.long : !!chat.cover)
+async function saveCover($: any, chat: Chat) {
+  const id = String(await $.session.id().catch(() => ''))
+  if (id) await $.store.set(`cover:${id}`, chat.cover ?? null)
+}
+// After a reload the chat's cover is read back once, so the card stays where it was.
+async function loadCover($: any, chat: Chat) {
+  if (chat.cover !== undefined) return
+  const id = String(await $.session.id().catch(() => ''))
+  const kept = id ? ((await $.store.get(`cover:${id}`).catch(() => null)) as { host?: unknown; word?: unknown } | null) : null
+  chat.cover = kept && typeof kept.host === 'string' && typeof kept.word === 'string' ? { host: kept.host, word: kept.word, ...(Array.isArray((kept as any).asks) ? { asks: (kept as any).asks.map(String).slice(0, 5) } : {}), ...(Array.isArray((kept as any).recs) ? { recs: (kept as any).recs.map(String).slice(0, 5) } : {}) } : null
+}
+// The big card that covers a finished chat: the word in large pixels, and the way back to the chat.
+function coverCard($: any, e: any, chat: Chat, drawn: { chat: Chat; id: string }) {
+  const { Box, Text, Button, Svg } = $.ui.resolve(e) as Record<string, any>
+  const word = chat.cover?.word ?? '▶ YOUR TURN'
+  const said = word.slice(2).toLowerCase().replace(/^./, c => c.toUpperCase())
+  // Shown with the chat above it, the card stays at the bottom, so the chat's end stays where the view already is.
+  const open = !!chat.uncovered
+  return (
+    <Box key="textless-cover" flexDirection="column" alignItems="center" justifyContent="center" gap={1} paddingY={open ? 2 : 6}>
+      {chat.title ? <Text key="textless-cover-title" dimColor wrap="truncate">{chat.title}</Text> : null}
+      {Svg
+        ? <Svg source={pixelWord(word, '#d97757')} alt={said} width={pixelWidth(word) * 3} height={PIXEL_H * 3} />
+        : <Text color="#d97757" bold>{said}</Text>}
+      {/* What Claude asks, drawn as under answers: an orange ? and the question, an orange letter per option. */}
+      {(chat.cover?.asks ?? []).length
+        ? <Box key="textless-cover-asks" flexDirection="column" gap={1} paddingX={2}>
+            {(chat.cover?.asks ?? []).map((text, i, all) => {
+              const c = choices(text)
+              return (
+                <Box key={`textless-cover-ask-${i}`} flexDirection="row" alignItems="flex-start" gap={1}>
+                  {all.length > 1 ? <Text color="#d97757" bold>{`${i + 1}`}</Text> : null}
+                  {Svg
+                    ? <Svg source={badgeSvg('?', '#d97757')} alt="Question" width={9 * BADGE_PX} height={9 * BADGE_PX} />
+                    : <Text color="#d97757">?</Text>}
+                  <Box flexDirection="column">
+                    <Text bold wrap="wrap">{c.stem || text}</Text>
+                    {chat.cover?.recs?.[i] ? recommendedLine($, e, chat.cover.recs[i]) : null}
+                    {c.options.map((o, j) => (
+                      <Box key={`textless-cover-ask-${i}-${j}`} flexDirection="row" gap={1}>
+                        <Text color="#d97757" bold>{String.fromCharCode(65 + j)}</Text>
+                        <Text wrap="wrap">{o}</Text>
+                      </Box>
+                    ))}
+                  </Box>
+                </Box>
+              )
+            })}
+          </Box>
+        : null}
+      {open ? null : <Text dimColor>The chat is hidden while textless covers it.</Text>}
+      <Button key="textless-cover-show" plain label={open ? 'Hide the chat' : 'Show the chat'} onPress={() => {
+        drawn.chat.uncovered = !open
+        $.ui.invalidate('ui.render')
+      }} />
+    </Box>
+  )
+}
+
+// Planning: a spec, plan or notes being written (a document edited), or Claude leaving plan mode. The person reads
+// those turns, so folding them away hides what they are asked about.
+const DOC = /\.(md|mdx|markdown|txt|rst|adoc)$/i
+export function planningStep(tool: string, input: any): boolean {
+  if (/^(ExitPlanMode|EnterPlanMode)$/.test(tool)) return true
+  if (!/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool)) return false
+  return DOC.test(String(input?.file_path ?? input?.path ?? input?.notebook_path ?? ''))
+}
+// The turn shows as Claude Code draws it from here on: the card goes, nothing folds, and it is not covered.
+function stepAside($: any, chat: Chat, id: string) {
+  if (!chat.working) return
+  dbg($, `planning detected at ${id.slice(-8)}: textless steps aside for this turn`)
+  chat.working = false
+  chat.long = false
+  chat.cover = null
+  chat.planKey = id
+  chat.timer?.cancel()
+  chat.timer = null
+  void saveCover($, chat).catch(() => undefined)
+  void Promise.resolve().then(() => $.ui.invalidate('ui.render'))
+}
+// The small label on the step that showed the planning.
+function planLabel($: any, e: any, inner: unknown) {
+  const { Box, Text } = $.ui.resolve(e) as Record<string, any>
+  return (
+    <Box flexDirection="column">
+      {inner as never}
+      <Box key="textless-planning" flexDirection="row" gap={1}>
+        <Text color="#d97757">✎ Planning detected</Text>
+        <Text dimColor>textless shows this turn as it is, so you can read the plan.</Text>
+      </Box>
+    </Box>
+  )
+}
+
+async function keepTitle($: any, raw: unknown) {
+  const title = String(raw ?? '').trim()
+  if (title) (await chatOf($)).title = title.slice(0, 80)
+}
+
 function endTurn($: any, chat: Chat) {
   dbg($, `endTurn working=${chat.working} long=${chat.long} steps=${chat.steps.length}`)
   // A turn the card covered stays folded once it is done: only its answer shows.
+  chat.newestAt = -1
   if (chat.working && chat.long && chat.steps.length > 0) {
     const index = done.length
+    chat.newestAt = index
     const answer = chat.lastText.trim() ? chat.lastText : ''
     done.push({ first: chat.steps[chat.steps.length - 1], steps: chat.steps.length, ms: chat.durationMs, open: false, answer, scene: sceneIndex(chat), stopped: chat.stopped, labels: chat.steps.map(id => stepLabels.get(id) ?? 'step') })
     if (answer) doneAnswers.set(answer, index)
@@ -770,6 +1122,14 @@ function endTurn($: any, chat: Chat) {
     // folds.
     for (const t of chat.turnTexts) if (t.trim() && !chat.lastText.startsWith(t) && !inAnswer(chat, t) && !isKept(chat, t)) foldedTexts.set(t, index)
     void saveDone($, index).catch(() => undefined)
+  }
+  if (chat.working && !chat.long) {
+    chat.cover = null
+    void saveCover($, chat).catch(() => undefined)
+  } else if (chat.working) {
+    const only = asks(chat.answer) && questions(chat.answer).every(q => q.asks)
+    chat.cover = { host: chat.lastText, word: chat.stopped ? '■ STOPPED' : only ? '? NEED YOUR INPUT' : '▶ YOUR TURN', asks: questions(chat.answer).filter(q => q.asks).map(q => q.text).slice(0, 5), recs: questions(chat.answer).filter(q => q.asks).map(q => recommendation(chat.answer, q.raw || q.text)).slice(0, 5) }
+    void saveCover($, chat).catch(() => undefined)
   }
   chat.turnTexts = new Set<string>()
   chat.kept = []
@@ -894,7 +1254,38 @@ const asks = (answer: string) =>
 // Handed to the model with each prompt while textless is on: the person reads the questions under the YOUR TURN word, away
 // from the rest of the answer, so each must make sense alone.
 const HINT_EVERY = 20
-const QUESTION_HINT = 'textless shows each question you ask the user on its own, apart from the rest of your answer. When you ask something, write each question so it makes sense alone: name what it is about (not \'it\' or \'det\'), keep it to one line ending in \'?\', and for a choice put a short question first and then the options written out (never only their letters), like \'Where does it turn white? At the first screen, or near the end?\'. textless numbers the items of a list that asks something (1, 2, 3, in your order) and letters the options of a choice (A, B, C, in your order), so the user may answer like \'1A, 2 slowly, 3 attached\': read the reply by those numbers and letters.'
+const QUESTION_HINT = 'textless shows each question you ask the user on its own, apart from the rest of your answer. When you ask something, write each question so it makes sense alone: name what it is about (not \'it\' or \'det\'), keep it to one line ending in \'?\', and for a choice put a short question first and then the options written out (never only their letters), like \'Where does it turn white? At the first screen, or near the end?\'. textless numbers the items of a list that asks something (1, 2, 3, in your order) and letters the options of a choice (A, B, C, in your order), so the user may answer like \'1A, 2 slowly, 3 attached\': read the reply by those numbers and letters. If you recommend an answer, say it in one sentence right after the question, starting with \'I recommend\'.'
+
+// Claude's recommendation for a question: a sentence that says so ("I recommend", "I'd suggest", "Jag föreslår", ...)
+// close to the question in the answer, the nearest one winning; or an option marked "(recommended)". Shown under the
+// question, so the person sees what Claude would pick.
+const RECOMMEND = /\b(I(?:'d| would)? (?:recommend|suggest)|My (?:recommendation|suggestion|pick)|Recommended|Jag (?:föreslår|rekommenderar|skulle välja)|Mitt förslag|Rekommenderat)\b/i
+const REC_NEAR = 600
+// The recommendation as a line under its question: an orange label, then what Claude would pick.
+function recommendedLine($: any, e: any, text: string) {
+  const { Box, Text } = $.ui.resolve(e) as Record<string, any>
+  return (
+    <Box key="textless-rec" flexDirection="row" gap={1}>
+      <Text color="#d97757" bold>Recommended:</Text>
+      <Text wrap="wrap">{text}</Text>
+    </Box>
+  )
+}
+const REC_MAX = 170
+export function recommendation(answer: string, question: string): string {
+  const text = answer.replace(/```[\s\S]*?```/g, ' ')
+  const marked = question.match(/([^,;?]*?)\s*\((?:recommended|rekommenderas|rekommenderat)\)/i)
+  if (marked) return `${marked[1].replace(/^.*\b(?:or|eller)\s+/i, '').trim()}`
+  const at = text.indexOf(question.slice(0, 40))
+  if (at < 0) return ''
+  const sentences = [...text.matchAll(/[^.!?\n]+[.!?]?/g)].map(m => ({ s: m[0].trim(), i: m.index ?? 0 }))
+  const near = sentences
+    .filter(x => RECOMMEND.test(x.s) && Math.abs(x.i - at) <= REC_NEAR && !x.s.endsWith('?'))
+    .sort((a, b) => Math.abs(a.i - at) - Math.abs(b.i - at))[0]
+  if (!near) return ''
+  const plain = near.s.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[*_`#>]/g, '').replace(/\s+/g, ' ').trim()
+  return plain.length > REC_MAX ? `${plain.slice(0, REC_MAX - 1).trimEnd()}…` : plain
+}
 // Each option at most this long: a longer one wraps anyway, and a break at its "or" then reads as a broken sentence.
 const CHOICE_MAX = 80
 // A question that offers a choice, split at its "or"s (outside quotes) so each option can sit on its own line. Two
@@ -1185,12 +1576,14 @@ async function doneCard($: any, e: any, next: any, at: number) {
   // The questions the list below shows leave the answer text, so each reads once; links and code blocks stay in it,
   // drawn by the app with its own copy button.
   const d = done[at]
-  const strip = summaryOn && !d.stopped && asks(d.answer)
+  // With cover mode on, the cover card shows the questions: the answer keeps them and the done row does not repeat them.
+  const strip = summaryOn && !coverOn && !d.stopped && asks(d.answer)
   const inner = await next(strip ? { ...e, props: { ...(e.props ?? {}), text: withoutAsked(String((e.props as any)?.text ?? '')) } } : e)
   return (
     <Box key={`done-${at}`} flexDirection="column" gap={1}>
       {inner}
       {await doneRow($, e, at, next)}
+      {(await chatOf($)).newestAt === at ? chessBelow($, e) : null}
     </Box>
   )
 }
@@ -1206,6 +1599,29 @@ async function doneRow($: any, e: any, at: number, next?: any) {
   // Commands when every step ran one (Bash, PowerShell), steps when it also read, edited or searched.
   const noun = d.labels.length > 0 && d.labels.every(l => /^(Bash|PowerShell)/.test(l)) ? 'command' : 'step'
   const facts = `${d.steps} ${noun}${d.steps === 1 ? '' : 's'} · ${clock(d.ms)}`
+  // The done line is part of what shows under answers: off, only the way to the steps stays.
+  // Under the newest answer the row also carries textless's buttons, at its end.
+  if (!summaryOn) {
+    const show = <Button key={`done-${at}-btn`} plain dimColor label={d.open ? `hide ${noun}s` : `show ${noun}s`} onPress={() => unfold($, at)} />
+    const chat = await chatOf($)
+    if (chat.newestAt === at || (d.answer && isNewest(chat, d.answer))) {
+      await refreshTheme($)
+      const drawn = { chat, id: String(await $.session.id().catch(() => '')) }
+      return (
+        <Box key={`done-${at}-row`} flexDirection="row" alignItems="center">
+          {show}
+          {backgroundLine($, e, chat)}
+          <Box flexGrow={1} />
+          {controls($, e, drawn)}
+        </Box>
+      )
+    }
+    return (
+      <Box key={`done-${at}-row`} flexDirection="row">
+        {show}
+      </Box>
+    )
+  }
   // Only questions: the word says so. Anything to do as well: it hands over, YOUR TURN and OVER TO YOU taking turns
   // from one done row to the next so the wording stays fresh.
   const items = ask ? questions(d.answer) : []
@@ -1228,7 +1644,7 @@ async function doneRow($: any, e: any, at: number, next?: any) {
         <Text dimColor>{facts}</Text>
         <Button key={`done-${at}-btn`} plain dimColor label={d.open ? `hide ${noun}s` : `show ${noun}s`} onPress={() => unfold($, at)} />
       </Box>
-      {ask && summaryOn
+      {ask && summaryOn && !coverOn
         // One question reads as it is; several get an orange number each, with air between them.
         ? <Box key={`done-${at}-asks`} flexDirection="column" paddingLeft={1}>
             {questions(d.answer).flatMap((q, i, all) => [
@@ -1251,6 +1667,7 @@ async function doneRow($: any, e: any, at: number, next?: any) {
                     }
                     return [
                       c.stem ? <Text key={`done-${at}-ask-${i}-q`} bold wrap="wrap">{c.stem}</Text> : null,
+                      q.asks && recommendation(d.answer, q.raw || q.text) ? recommendedLine($, e, recommendation(d.answer, q.raw || q.text)) : null,
                       q.optional ? <Text key={`done-${at}-ask-${i}-opt`} color="#d97757">(optional)</Text> : null,
                       // Options that are only their own letters ("A, B or C?") read as one row of letters.
                       c.options.every((o, j) => o === String.fromCharCode(65 + j))
@@ -1293,12 +1710,19 @@ async function refreshTheme($: any) {
   $.ui.invalidate('ui.render')
 }
 const hoverBg = () => (isLight ? '#e8e5df' : '#2a2a2e')
+// Text lit by the pointer where no box can show it (the app's hover box on a blank button covered the "Aa" under it).
+const hoverText = () => (isLight ? '#1a1a1a' : '#f2f2f2')
 
 // A turn starts: from the person's prompt, or from Claude's own first step when nothing was sent (a background task
 // woke it). Every row already drawn is old; the card shows once the turn has run a few seconds.
 async function startTurn($: any, chat: Chat, text: string) {
   chat.running = true
+  // A chat uncovered with Show the chat is covered again as soon as Claude starts on the next message.
+  chat.uncovered = false
+  chat.planKey = undefined
   chat.mainDone = false
+  chat.listed = false
+  chat.fullAnyway = false
   chat.prompt = text
   dbg($, `turn start on=${chat.on} text=${chat.prompt.slice(0, 40)}`)
   chat.baselineUntil = Date.now() + BASELINE_MS
@@ -1311,6 +1735,7 @@ async function startTurn($: any, chat: Chat, text: string) {
   chat.turns += 1
   await loadOwn($)
   await loadBuiltIn($)
+  chat.sceneAt = pick === null ? chooseScene($) : -1
   chat.startedAt = await $.clock.now()
   chat.steps = []
   chat.cardKey = ''
@@ -1427,7 +1852,11 @@ async function checkUpdateNow($: any): Promise<string> {
   await $.store.set('updateHidden', null).catch(() => undefined)
   if (updCard && (updCard.stage === 'done' || updCard.stage === 'failed')) updCard = null
   await checkUpdate($).catch((error: unknown) => { updLastCheck = `check failed: ${String(error).slice(0, 120)}` })
-  return updCard?.stage === 'offer' ? `textless ${updCard.version} is out: press Update above the prompt. (${updLastCheck})` : `textless is up to date. (${updLastCheck})`
+  if (updCard?.stage === 'offer') return `textless ${updCard.version} is out: press Update above the prompt. (${updLastCheck})`
+  // Run from a folder (a local marketplace or --plugin-dir), not a downloaded copy: the folder itself is the version,
+  // so "up to date" says nothing.
+  if (!/[\\/]cache[\\/]/.test(String($.plugin.root))) return `textless runs straight from its folder here (${$.plugin.root}), so it is always the version in that folder. The update card is for installs from GitHub. (${updLastCheck})`
+  return `textless is up to date. (${updLastCheck})`
 }
 
 
@@ -1544,6 +1973,12 @@ type ChessGame = {
   fen: string
   moves: string[]
   waiting: 'you' | 'claude'
+  // Who answers: the engine inside textless (the default: instant, no tokens) or Claude itself, one chat turn a move.
+  vs?: 'engine' | 'claude'
+  // How hard the engine plays; hard when not set.
+  level?: ChessLevel
+  // The side the person plays, drawn at the bottom; white when not set. Chosen by chance for each new game.
+  side?: 'w' | 'b'
   // Claude's tries at a legal move this turn; after two misses a legal move is played for it so the game never stalls.
   tries: number
   last?: [number, number]
@@ -1585,19 +2020,21 @@ const CHESS_ENDINGS: Record<Exclude<Outcome, null>, string> = {
 function chessEnding(p: Position): string | undefined {
   const o = outcome(p)
   if (!o) return undefined
-  if (o === 'checkmate') return p.turn === 'w' ? 'Checkmate. Claude wins.' : 'Checkmate. You win!'
+  const rival = chessGame?.vs === 'claude' ? 'Claude' : 'The computer'
+  // The side to move is the one mated.
+  if (o === 'checkmate') return p.turn === (chessGame?.side ?? 'w') ? `Checkmate. ${rival} wins.` : 'Checkmate. You win!'
   return `${CHESS_ENDINGS[o]}.`
 }
 
 function chessContextFor(p: Position, g: ChessGame): string {
   const legal = legalMoves(p).map(uci).join(' ')
   return [
-    'textless chess: you are playing black against the person, in this chat. The textless mod keeps the board and the rules; you only choose your move.',
+    `textless chess: you are playing ${g.side === 'b' ? 'white' : 'black'} against the person, in this chat. The textless mod keeps the board and the rules; you only choose your move.`,
     `Position (FEN): ${toFen(p)}`,
     `Board, white at the bottom (capitals are white):\n${picture(p)}`,
     `Moves so far: ${g.moves.join(' ') || '(none)'}`,
     `Your legal moves: ${legal}`,
-    'Choose one of those legal moves and play to win. Answer in one or two short, friendly sentences, like an opponent across the board, with no lists and no questions. Use no tools. End with a line that is exactly "MOVE: " and the move as written in the list, for example "MOVE: e7e5".',
+    `Choose one of those legal moves and play to win. Answer in one or two short, friendly sentences, like an opponent across the board, with no lists and no questions. Use no tools. End with a line that is exactly "MOVE: " and the move as written in the list, for example "MOVE: ${g.side === 'b' ? 'e2e4' : 'e7e5'}".`,
   ].join('\n')
 }
 
@@ -1617,9 +2054,28 @@ function chessShown(e: any): any {
   return cut < 0 ? e : { ...e, props: { ...e.props, text: text.slice(0, cut) } }
 }
 
-async function chessNew($: any) {
-  chessGame = { fen: START, moves: [], waiting: 'you', tries: 0 }
+async function chessNew($: any, vs: 'engine' | 'claude' = chessGame?.vs ?? 'engine', side: 'w' | 'b' = Math.random() < 0.5 ? 'w' : 'b') {
+  chessGame = { fen: START, moves: [], waiting: side === 'w' ? 'you' : 'claude', tries: 0, vs, level: chessGame?.level, side }
   chessPicked = null
+  await chessSave($)
+  // The person plays black: the opponent opens.
+  if (side === 'b') {
+    // A moment after the command has printed its row: a message sent from inside the command is not reliable.
+    if (vs === 'claude') $.clock.after(300, () => void chessAsk($, '♟ You play white and open. I play black.').catch(() => undefined))
+    else $.clock.after(450, () => void chessEngineMove($).catch(() => undefined))
+  }
+}
+
+// Where the board is drawn: in the row of the /chess command until the next message is sent, after that in the card's
+// place while Claude works and under the newest answer otherwise. One board at a time, never above the prompt: the band
+// there holds twelve rows, shared with other mods' bars, and drops a taller tree whole.
+let chessAnchor: 'command' | 'chat' = 'command'
+let chessOut = ''
+
+async function chessLevel($: any) {
+  const g = chessGame
+  if (!g) return
+  g.level = CHESS_LEVELS[(CHESS_LEVELS.indexOf(g.level ?? 'hard') + 1) % CHESS_LEVELS.length]
   await chessSave($)
 }
 
@@ -1633,9 +2089,11 @@ async function chessPress($: any, sq: number) {
   const g = chessGame
   if (!g || g.over || g.waiting !== 'you') return
   const p = parseFen(g.fen)
-  const mine = p.board[sq] && p.board[sq] === p.board[sq].toUpperCase()
+  const mine = Boolean(p.board[sq]) && (p.board[sq] === p.board[sq].toUpperCase()) === ((g.side ?? 'w') === 'w')
   if (chessPicked === null || mine) {
-    chessPicked = mine && chessPicked !== sq ? sq : null
+    // A piece clicked again stays picked: the highlight can be a moment late, and a second click in that moment must not
+    // undo the first. Another square or another piece changes it.
+    chessPicked = mine ? sq : null
     $.ui.invalidate('ui.render')
     return
   }
@@ -1657,8 +2115,28 @@ async function chessYourMove($: any, p: Position, move: Move) {
   g.waiting = g.over ? 'you' : 'claude'
   g.tries = 0
   await chessSave($)
+  if (g.vs !== 'claude') {
+    if (!g.over) $.clock.after(450, () => void chessEngineMove($).catch(() => undefined))
+    return
+  }
   if (g.over) await $.prompt.submit({ text: `♟ I play ${words}. ${g.over}`, asUser: true }).catch(() => undefined)
   else await chessAsk($, `♟ I play ${words}. Your move.`)
+}
+
+// The built-in opponent's reply, a moment after the person's move so it can be seen first.
+async function chessEngineMove($: any) {
+  const g = chessGame
+  if (!g || g.over || g.vs === 'claude' || g.waiting !== 'claude') return
+  const p = parseFen(g.fen)
+  const move = bestMove(p, g.level ?? 'hard')
+  if (!move) return
+  const next = play(p, move)
+  g.fen = toFen(next)
+  g.moves.push(uci(move))
+  g.last = [move.from, move.to]
+  g.over = chessEnding(next)
+  g.waiting = 'you'
+  await chessSave($)
 }
 
 // Claude's move from its answer: the last "MOVE: e7e5" line, checked against the legal moves.
@@ -1673,7 +2151,7 @@ function chessMoveFrom(answer: string, p: Position): Move | null {
 
 async function chessAnswered($: any, answer: string) {
   const g = chessGame
-  if (!g || g.waiting !== 'claude') return
+  if (!g || g.waiting !== 'claude' || g.vs !== 'claude') return
   const p = parseFen(g.fen)
   let move = chessMoveFrom(answer, p)
   if (!move) {
@@ -1697,48 +2175,97 @@ async function chessAnswered($: any, answer: string) {
   await chessSave($)
 }
 
+// A piece as a picture, big and the same on every platform: the solid glyph in the side's colour with an outline in the
+// other's, so it reads on a light square and on a dark one. The square's own colour is the Box behind it.
+const CHESS_SOLID: Record<string, string> = { k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' }
+const pieceSvgs = new Map<string, string>()
+function pieceSvg(piece: string) {
+  let svg = pieceSvgs.get(piece)
+  if (!svg) {
+    const white = piece === piece.toUpperCase()
+    svg = `<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 48 48"><text x="24" y="38" text-anchor="middle" font-size="42" font-family="'Segoe UI Symbol','Noto Sans Symbols 2','Apple Symbols','DejaVu Sans',serif" fill="${white ? '#fbf6ee' : '#1e1713'}" stroke="${white ? '#3b2a1e' : '#e9dccb'}" stroke-width="1.4" paint-order="stroke">${CHESS_SOLID[piece.toLowerCase()]}&#xFE0E;</text></svg>`
+    pieceSvgs.set(piece, svg)
+  }
+  return svg
+}
+// A square in cells on the desktop's character grid, from how many columns the row has: the board takes most of the
+// width, the most 12 cells a square, and a square is about as high as wide (a cell is about 2.4 times as high as wide).
+function boardCells(e: any) {
+  const columns = Math.max(30, Number(e.viewport?.columns) || 80)
+  const w = Math.max(4, Math.min(12, Math.floor((columns - 6) / 8)))
+  const h = Math.max(2, Math.round(w / 2.6))
+  return { w, h, piece: Math.round(Math.min(w * 9, h * 22) * 0.72) }
+}
+
 function chessBoardView($: any, e: any) {
-  const { Box, Text, Button } = $.ui.resolve(e) as Record<string, any>
+  const { Box, Text, Button, Svg } = $.ui.resolve(e) as Record<string, any>
+  const cell = boardCells(e)
   const g = chessGame!
   const p = parseFen(g.fen)
   const targets = new Set(chessPicked === null ? [] : legalMoves(p).filter(m => m.from === chessPicked).map(m => m.to))
-  const status = g.over ?? (g.waiting === 'you' ? 'Your move: click a piece, then where it goes.' : 'Claude is thinking…')
+  const rival = g.vs === 'claude' ? 'Claude' : 'The computer'
+  const status = g.over ?? (g.waiting === 'you' ? 'Your move' : `${rival} is thinking…`)
   const rows = []
-  for (let r = 7; r >= 0; r--) {
+  // The person's side is at the bottom: white's rank 1 and file a, or black's rank 8 and file h.
+  const down = (g.side ?? 'w') === 'b'
+  for (let ri = 0; ri < 8; ri++) {
+    const r = down ? ri : 7 - ri
     const cells = []
-    for (let f = 0; f < 8; f++) {
+    for (let fi = 0; fi < 8; fi++) {
+      const f = down ? 7 - fi : fi
       const sq = r * 8 + f
       const piece = p.board[sq]
       const shade = sq === chessPicked ? CHESS_PICKED : targets.has(sq) ? CHESS_TARGET : g.last?.includes(sq) ? CHESS_LAST : (r + f) % 2 ? CHESS_LIGHT : CHESS_DARK
-      // A Button takes a plain label only, so the square's colour is the Box around it and white's pieces are the
-      // outlined glyphs, black's the filled ones.
-      const glyph = piece ? CHESS_GLYPH[piece] : ' '
+      if (!Svg) {
+        // The terminal: small squares, one button each. The no-break spaces keep an empty square as wide as a full one.
+        const glyph = piece ? CHESS_GLYPH[piece] : ' '
+        cells.push(
+          <Box key={`chess-cell-${sq}`} backgroundColor={shade}>
+            <Button key={`chess-${sq}`} plain label={` ${glyph} `} onPress={() => chessPress($, sq)} />
+          </Box>,
+        )
+        continue
+      }
+      // The square is a Box of the right colour and size, the piece a picture in it, and over both a column of blank
+      // buttons (one per line) so a click anywhere on the square counts. The Box has no gap to its neighbours.
+      const squareFill = ' '.repeat(cell.w)
       cells.push(
-        <Box key={`chess-cell-${sq}`} backgroundColor={shade}>
-          <Button key={`chess-${sq}`} plain label={` ${glyph} `} onPress={() => chessPress($, sq)} />
+        <Box key={`chess-cell-${sq}`} width={cell.w} height={cell.h} flexShrink={0} backgroundColor={shade} alignItems="center" justifyContent="center">
+          {piece ? <Svg source={pieceSvg(piece)} alt={piece} width={cell.piece} height={cell.piece} /> : null}
+          <Box position="absolute" top={0} bottom={0} left={0} right={0} flexDirection="column">
+            {Array.from({ length: cell.h }, (_, line) => (
+              <Button key={line === 0 ? `chess-${sq}` : `chess-${sq}-${line}`} plain label={squareFill} hover={{ scope: `chess-${sq}`, backgroundColor: '#00000000' }} onPress={() => chessPress($, sq)} />
+            ))}
+          </Box>
         </Box>,
       )
     }
     rows.push(
-      <Box key={`chess-row-${r}`} flexDirection="row">
-        <Text dimColor>{`${r + 1} `}</Text>
+      <Box key={`chess-row-${r}`} flexDirection="row" alignItems="center">
+        <Box width={2} flexShrink={0}><Text dimColor>{`${r + 1}`}</Text></Box>
         {cells}
       </Box>,
     )
   }
-  // The band above the prompt has e.props.maxRows rows and drops a taller tree whole, without a word: the board is
-  // one header row and its eight ranks, and the file letters come only when there is room for them.
-  const room = typeof e.props?.maxRows === 'number' ? e.props.maxRows : 12
-  if (room < 9) return <Text key="chess" color="#d97757">{`♟ Chess with Claude · ${status} The board needs a taller window.`}</Text>
   return (
     <Box key="chess" flexDirection="column">
-      <Box key="chess-head" flexDirection="row" gap={1} alignItems="center">
-        <Text color="#d97757" bold>{`♟ Chess with Claude · ${status}`}</Text>
+      <Box key="chess-head" flexDirection="row" flexWrap="wrap" gap={1} alignItems="center">
+        <Text color="#d97757" bold>{`♟ Chess${g.vs === 'claude' ? ' with Claude' : ''} · ${status}`}</Text>
+        {g.vs === 'claude' ? null : (
+          <Button key="chess-level" plain dimColor label={`Level: ${g.level ?? 'hard'}`} onPress={() => chessLevel($)} />
+        )}
         <Button key="chess-new" plain dimColor label="New game" onPress={() => chessNew($)} />
         <Button key="chess-end" plain dimColor label="Close" onPress={() => chessEnd($)} />
       </Box>
       {rows}
-      {room >= 10 ? <Text dimColor>{'   a  b  c  d  e  f  g  h'}</Text> : null}
+      {Svg ? (
+        <Box key="chess-files" flexDirection="row">
+          <Box width={2} flexShrink={0} />
+          {(down ? 'hgfedcba' : 'abcdefgh').split('').map(l => (
+            <Box key={`chess-file-${l}`} width={cell.w} flexShrink={0} justifyContent="center"><Text dimColor>{l}</Text></Box>
+          ))}
+        </Box>
+      ) : <Text dimColor>{down ? '   h  g  f  e  d  c  b  a' : '   a  b  c  d  e  f  g  h'}</Text>}
     </Box>
   )
 }
@@ -1747,7 +2274,7 @@ function chessBoardView($: any, e: any) {
 
 async function chessStart($: any) {
   await chessLoad($)
-  void $.command.register({ name: 'chess', description: 'Play chess against Claude in this chat.' }).catch(() => undefined)
+  void $.command.register({ name: 'chess', description: 'Play chess in this chat: against the computer, or /chess claude against Claude.' }).catch(() => undefined)
 }
 
 // /chess: a new game, the one in play, or the board closed. Null when the command is not chess.
@@ -1759,12 +2286,18 @@ async function chessCommand($: any, e: any): Promise<{ text: string } | null> {
     await chessEnd($)
     return { text: 'Chess board closed.' }
   }
-  if (!chessGame || chessGame.over || arg === 'new') {
-    await chessNew($)
-    return { text: 'New game. You play white: the board is above the prompt. Click a piece, then where it goes.' }
+  const words = arg.split(/\s+/).filter(Boolean)
+  const want = words.includes('claude') ? 'claude' : words.includes('engine') || words.includes('computer') ? 'engine' : undefined
+  const side = words.includes('white') ? 'w' : words.includes('black') ? 'b' : undefined
+  chessAnchor = 'command'
+  chessOut = `chess ${Date.now()}`
+  if (!chessGame || chessGame.over || words.includes('new') || side || (want && want !== chessGame.vs)) {
+    await chessNew($, want, side)
+    const mine = chessGame!.side === 'b' ? 'black, so the opponent opens' : 'white'
+    return { text: `${chessOut}: New game against ${chessGame!.vs === 'claude' ? 'Claude' : 'the computer'}. You play ${mine}. Click a piece, then where it goes.` }
   }
   $.ui.invalidate('ui.render')
-  return { text: 'Your game is above the prompt. /chess new starts over, /chess end closes it.' }
+  return { text: `${chessOut}: Your game is below. /chess new starts over, /chess claude plays against Claude instead, /chess end closes it.` }
 }
 
 async function chessTurn($: any, e: any) {
@@ -1773,10 +2306,25 @@ async function chessTurn($: any, e: any) {
   await chessAnswered($, String(e.answer ?? ''))
 }
 
-// The board above the prompt while a game is open, or null.
-async function chessBoard($: any, e: any) {
-  await chessLoad($)
-  return chessGame ? chessBoardView($, e) : null
+// The board in the chat, where it is drawn once a message has been sent: under the newest answer, or null.
+function chessBelow($: any, e: any) {
+  return chessGame && chessAnchor === 'chat' ? chessBoardView($, e) : null
+}
+
+// The card's place while Claude works and a game is open: the board with the card's own buttons above it. No size
+// limit here, it is a row of the chat and not the band above the prompt.
+function chessCard($: any, e: any, chat: Chat, step: string) {
+  const { Box, Text, Button } = $.ui.resolve(e) as Record<string, any>
+  return (
+    <Box key="textless" flexDirection="column" paddingBottom={1}>
+      <Box key="textless-top" flexDirection="row" justifyContent="flex-end" width="100%" height={1}>
+        {Button ? controls($, e) : null}
+        {Button ? sizeButton($, e, 'minimize') : null}
+      </Box>
+      {chessBoardView($, e)}
+      <Text dimColor wrap="truncate">{`Claude is working · ${chat.mainDone ? waitingFor(chat) : step}`}</Text>
+    </Box>
+  )
 }
 
 export const register: Register = on => {
@@ -1815,12 +2363,21 @@ export const register: Register = on => {
       await $.store.set('debug', debugOn).catch(() => undefined)
       return { text: debugOn ? 'textless debug log on: ~/.claude/textless/debug-<chat>.log' : 'textless debug log off.' }
     }
+    if (!ANSWERS && (arg.startsWith('cover') || arg.startsWith('summary')))
+      return { text: 'textless only draws the art for now. The cover card and the lines under answers are parked.' }
+    if (arg.startsWith('cover')) {
+      const want = arg.slice(5).trim()
+      coverOn = want === 'on' ? true : want === 'off' ? false : !coverOn
+      await $.store.set('cover', coverOn).catch(() => undefined)
+      $.ui.invalidate('ui.render')
+      return { text: coverOn ? 'textless covers a finished chat with one big card. Show the chat on the card brings it back until you send the next message.' : 'textless no longer covers finished chats.' }
+    }
     if (arg.startsWith('summary')) {
       const want = arg.slice(7).trim()
       summaryOn = want === 'on' ? true : want === 'off' ? false : !summaryOn
       await $.store.set('summary', summaryOn).catch(() => undefined)
       $.ui.invalidate('ui.render')
-      return { text: summaryOn ? 'textless shows the questions, links and next step under answers.' : 'textless shows only the done line under answers.' }
+      return { text: summaryOn ? 'textless shows the done line, questions, links and next step under answers.' : 'textless shows only a show steps link under answers.' }
     }
     if (arg === 'settings') {
       await openSettings($)
@@ -1837,6 +2394,14 @@ export const register: Register = on => {
     await setUp($)
     const chat = await chatOf($)
     dbg($, `prompt.submit seen running=${chat.running} mainDone=${chat.mainDone}`)
+    // A message sent: the board leaves the /chess row and moves down with the card and the newest answer.
+    if (chessGame && !String((e as any).text ?? '').startsWith('♟')) {
+      await chessLoad($)
+      if (chessAnchor !== 'chat') {
+        chessAnchor = 'chat'
+        $.ui.invalidate('ui.render')
+      }
+    }
     // A message sent while a turn runs, before its card shows, joins that turn. Once the card shows (or the turn has
     // answered and only background tasks run), the turn so far folds into its done line and a new card starts under
     // the message, so the card always sits below the latest thing the person said.
@@ -1865,13 +2430,28 @@ export const register: Register = on => {
       dbg($, 'turn start without a prompt')
       await startTurn($, chat, '')
     }
-    return yield* next(e)
+    const done = yield* next(e)
+    // The app does not draw the task tools as rows, so the step's own tool calls say a task list was made.
+    if (e.agentId === undefined) for (const t of ((done as any)?.toolUses ?? []) as any[]) noteList($, chat, t?.name)
+    return done
   })
   // A Stop hook that blocks sends Claude back to work inside the same turn, so the answer it just gave would fold as
   // text said along the way. It was an answer: it stays shown, and the turn's last answer still gets the done line.
+  // The app hands the chat's title along with each message and at the start; the cover card shows it.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    await keepTitle($, (e as any).session_title)
+    return next(e)
+  })
+  on('classic.SessionStart', async ($, e, next) => {
+    await keepTitle($, (e as any).session_title)
+    return next(e)
+  })
   on('classic.Stop', async ($, e, next) => {
     const r = (await next(e)) as { block?: string } | undefined
     const chat = await chatOf($)
+    const tasks = (((e as any).background_tasks ?? []) as any[]).filter(t => !/^(completed|failed|killed|stopped|cancelled)$/i.test(String(t?.status ?? '')))
+    chat.background = tasks.map(t => ({ id: String(t.id ?? ''), description: String(t.description ?? t.type ?? 'task').replace(/\s+/g, ' ').trim() }))
+    if (chat.background.length > 0) $.ui.invalidate('ui.render')
     const said = String((e as any).last_assistant_message ?? '').replace(/\s+/g, ' ').trim()
     if (r?.block && chat.working && said) {
       chat.kept.push(said)
@@ -1893,6 +2473,8 @@ export const register: Register = on => {
     }
     chat.stopped = ((e as any).reason ?? 'answer') !== 'answer'
     chat.answer = String((e as any).answer ?? '')
+    chat.newest = chat.answer
+    void Promise.resolve($.session.id()).then((id: unknown) => $.store.set(`newest:${String(id)}`, chat.newest)).catch(() => undefined)
     chat.durationMs = Number((e as any).durationMs ?? 0)
     if (chat.agents.size > 0 && chat.working) {
       chat.mainDone = true
@@ -1907,12 +2489,23 @@ export const register: Register = on => {
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     const chat = await chatOf($)
     const p = (e.props ?? {}) as Record<string, any>
+    const stepId = String(p.tool_use_id ?? '')
+    noteList($, chat, p.tool)
+    if (chat.working && !oldTools.has(stepId) && Date.now() >= chat.baselineUntil && planningStep(String(p.tool ?? ''), p.input)) stepAside($, chat, stepId)
+    if (chat.planKey && stepId === chat.planKey) return planLabel($, e, await next(e))
+    if (covering(chat) && (!chat.working || oldTools.has(String(p.tool_use_id ?? '')))) {
+      oldTools.add(String(p.tool_use_id ?? ''))
+      return blank($, e)
+    }
     if (!chat.working) {
       await loadDone($)
       oldTools.add(String(p.tool_use_id ?? ''))
-      if (!chat.on) return next(e)
+      if (!chat.on) return offRow($, e, chat, stepId === chat.cardKey, next)
       return folded($, e, next, [String(p.tool_use_id ?? '')])
     }
+    // A step of an earlier turn textless folded: it stays folded while the next turn runs. Sending a message redraws
+    // every row, and these went through as rows of no turn and opened up.
+    if (foldedTools.has(stepId) && !chat.steps.includes(stepId)) return folded($, e, next, [stepId])
     if (Date.now() < chat.baselineUntil && p.isRunning !== true) oldTools.add(String(p.tool_use_id ?? ''))
     if (p.tool_use_id) stepLabels.set(String(p.tool_use_id), stepLabel(String(p.tool ?? 'step'), p.input))
     const place = track($, chat, String(p.tool_use_id ?? ''), p.isRunning === true)
@@ -1920,6 +2513,7 @@ export const register: Register = on => {
     if (place === 'other') return next(e)
     if (place === 'later' || chat.underPrompt) return blank($, e)
     if (reanchor($, chat, p.onScreen)) return blank($, e)
+    if (cardUnderAnswer(chat)) return blank($, e)
     return card($, e, chat, String(p.input?.description ?? p.tool ?? ''))
   })
   // Parallel tool calls are folded into a group; while the group is this turn's first step, it is the card.
@@ -1929,19 +2523,31 @@ export const register: Register = on => {
     const chat = await chatOf($)
     const p = (e.props ?? {}) as Record<string, any>
     const ids = (Array.isArray(p.calls) ? p.calls : []).map((c: any) => String(c?.tool_use_id ?? c?.id ?? '')).filter(Boolean)
+    const planned = (Array.isArray(p.calls) ? p.calls : []).find((c: any) => planningStep(String(c?.tool ?? ''), c?.input))
+    const plannedId = planned ? String(planned.tool_use_id ?? planned.id ?? '') : ''
+    if (planned && chat.working && !oldTools.has(plannedId) && Date.now() >= chat.baselineUntil) stepAside($, chat, plannedId)
+    if (chat.planKey && ids.includes(chat.planKey)) return planLabel($, e, await next(e))
+    if (covering(chat) && (!chat.working || ids.every((id: string) => oldTools.has(id)))) {
+      for (const id of ids) oldTools.add(id)
+      return blank($, e)
+    }
     if (!chat.working) {
       await loadDone($)
       for (const id of ids) oldTools.add(id)
-      if (!chat.on) return next(e)
+      if (!chat.on) return offRow($, e, chat, ids.includes(chat.cardKey), next)
       return folded($, e, next, ids)
     }
+    // An earlier turn's folded group stays folded while the next turn runs (see ToolUse).
+    if (ids.length > 0 && ids.every((id: string) => foldedTools.has(id) && !chat.steps.includes(id))) return folded($, e, next, ids)
     if (Date.now() < chat.baselineUntil && p.isActive !== true) for (const id of ids) oldTools.add(id)
     for (const c of Array.isArray(p.calls) ? p.calls : []) if (c?.tool_use_id) stepLabels.set(String(c.tool_use_id), stepLabel(String(c.tool ?? 'step'), c.input))
+    for (const c of Array.isArray(p.calls) ? p.calls : []) noteList($, chat, c?.tool)
     for (const id of ids) track($, chat, id, p.isActive === true)
     dbg($, `ToolGroup n=${ids.length} active=${p.isActive} first=${ids.includes(chat.cardKey)}`)
     if (!ids.some((id: string) => chat.steps.includes(id))) return next(e)
     if (!ids.includes(chat.cardKey) || chat.underPrompt) return blank($, e)
     if (reanchor($, chat, p.onScreen)) return blank($, e)
+    if (cardUnderAnswer(chat)) return blank($, e)
     return card($, e, chat, 'Running several steps')
   })
   // The settings pane: on or off, which scene, and the person's own scenes folder.
@@ -2042,6 +2648,30 @@ export const register: Register = on => {
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const chat = await chatOf($)
     const text = String((e.props as any)?.text ?? '')
+    // A background task's notification: it ended, so the newest answer's row stops naming it.
+    const task = (e.props as any)?.task
+    if (task?.id && chat.background.some(t => t.id === String(task.id))) {
+      chat.background = chat.background.filter(t => t.id !== String(task.id))
+      void Promise.resolve().then(() => $.ui.invalidate('ui.render')).catch(() => undefined)
+    }
+    if (covering(chat) && !(chat.working && text === chat.prompt)) return blank($, e)
+    // Switched off while Claude works: the steps show as the app draws them, and the message that started the turn
+    // keeps a grey "Aa" under it to turn textless back on, so its buttons never all go at once.
+    if (chat.running && !chat.on && !chat.cardKey && text && text === chat.prompt) {
+      const { Box } = $.ui.resolve(e) as Record<string, any>
+      await refreshTheme($)
+      const inner = await next(chessShown(e))
+      const drawn = { chat, id: String(await $.session.id().catch(() => '')) }
+      return (
+        <Box key="textless-off" flexDirection="column">
+          {inner}
+          <Box flexDirection="row">
+            <Box flexGrow={1} />
+            {controls($, e, drawn)[0]}
+          </Box>
+        </Box>
+      )
+    }
     if (!chat.working || Date.now() < chat.baselineUntil) {
       if (text !== chat.prompt || !chat.working) oldPrompts.add(text)
       return next(chessShown(e))
@@ -2059,15 +2689,46 @@ export const register: Register = on => {
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     const chat = await chatOf($)
     const text = String((e.props as any)?.text ?? '')
+    // Uncovered with Show the chat: the last answer, and the card staying under it with Hide the chat.
+    if (chat.uncovered && !chat.working && chat.cover && text === chat.cover.host) {
+      const mine = doneAnswers.get(text)
+      const inner = mine === undefined ? await next(e) : await doneCard($, e, next, mine)
+      const { Box } = $.ui.resolve(e) as Record<string, any>
+      return (
+        <Box flexDirection="column">
+          {inner}
+          {coverCard($, e, chat, { chat, id: '' })}
+        </Box>
+      )
+    }
+    if (covering(chat)) {
+      await loadCover($, chat)
+      if (!chat.working) {
+        oldTexts.add(text)
+        if (chat.cover && text === chat.cover.host) return coverCard($, e, chat, { chat, id: String(await $.session.id().catch(() => '')) })
+        return blank($, e)
+      }
+      // Working: what the chat held before this turn stays hidden; this turn's text goes the usual way.
+      if (oldTexts.has(text) || Date.now() < chat.baselineUntil) return blank($, e)
+    }
     if (!chat.working) {
       oldTexts.add(text)
-      // Off shows the chat as Claude Code draws it, finished turns too.
-      if (!chat.on) return next(e)
+      // Off shows the chat as Claude Code draws it, finished turns too, with one line under the newest answer.
+      if (!chat.on) return isNewest(chat, text) ? newestRow($, e, await next(e)) : next(e)
       await loadDone($)
       const at = foldedTexts.get(text)
       if (at !== undefined) return blank($, e)
       const mine = doneAnswers.get(text)
-      return mine === undefined ? next(e) : doneCard($, e, next, mine)
+      if (mine === undefined) return isNewest(chat, text) ? newestRow($, e, await next(e)) : next(e)
+      return doneCard($, e, next, mine)
+    }
+    // An earlier turn textless folded keeps its look while the next one runs: the text said along the way hidden, the
+    // answer with its done row.
+    if (!chat.turnTexts.has(text)) {
+      await loadDone($)
+      if (foldedTexts.has(text)) return blank($, e)
+      const mine = doneAnswers.get(text)
+      if (mine !== undefined) return doneCard($, e, next, mine)
     }
     if (Date.now() < chat.baselineUntil) oldTexts.add(text)
     if (oldTexts.has(text)) return next(e)
@@ -2076,58 +2737,59 @@ export const register: Register = on => {
     // that answer: anything said after it belongs to whatever comes next and stays hidden.
     if (chat.mainDone && inAnswer(chat, text)) {
       dbg($, `text shown (answer while agents run) ${text.slice(0, 40)}`)
-      return next(e)
+      // The card leaves the steps above and waits under the answer's last block, at the foot of the chat.
+      if (!cardUnderAnswer(chat) || !chat.answer.trim().endsWith(text.trim())) return next(e)
+      const { Box } = $.ui.resolve(e) as Record<string, any>
+      const inner = await next(e)
+      return (
+        <Box key="textless-waiting" flexDirection="column" gap={1}>
+          {inner}
+          {await card($, e, chat, '')}
+        </Box>
+      )
     }
+    const isNew = !chat.turnTexts.has(text)
     chat.turnTexts.add(text)
     chat.lastText = text
     if (!chat.long) {
       dbg($, `text shown (not long yet) ${text.slice(0, 40)}`)
       return next(e)
     }
+    // Only text not seen before asks for the redraw: the redraw draws this text again, and asking on every draw made
+    // a loop, a redraw of the whole chat every 0.7 s, which flickered the card.
+    if (isNew) settleText($)
     return blank($, e)
+  })
+  // /chess prints its board in its own output row, in the place the command was run, until the next message.
+  on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => {
+    const p = (e.props ?? {}) as Record<string, any>
+    if (p.command !== 'chess' && !String(p.command).endsWith(':chess')) return next(e)
+    await chessLoad($)
+    const text = String(p.text ?? '')
+    if (!chessGame || !chessOut || !text.includes(chessOut) || chessAnchor !== 'command') return next(e)
+    const { Box, Text } = $.ui.resolve(e) as Record<string, any>
+    return (
+      <Box key="chess-out" flexDirection="column" gap={1}>
+        <Text dimColor wrap="truncate">{text.replace(`${chessOut}: `, '')}</Text>
+        {chessBoardView($, e)}
+      </Box>
+    )
   })
   // A new version: offered, updating, or just updated, above the prompt. Another mod may draw there too, so its band
   // stays, under the card.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     void afterLoad($).catch(() => undefined)
     const upd = await shownUpdateCard($, String(e.surface ?? ''))
-    const board = await chessBoard($, e)
-    if (!upd && !board) return next(e)
+    if (!upd) return next(e)
     const inner = await next(e)
     const { Box } = $.ui.resolve(e) as Record<string, any>
     return (
       <Box flexDirection="column">
         {upd ? updateCardOf($, e, upd) : null}
         {inner}
-        {board}
       </Box>
     )
   })
-  // One icon in the model strip turns the card on and off for every chat. Another mod may draw this strip too, so its
-  // drawing is kept and the icon is put after it.
-  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    await setUp($)
-    const inner = await next(e)
-    if (e.surface !== 'desktop') return inner
-    const { Box, Text, Button, Svg } = $.ui.resolve(e) as Record<string, any>
-    // The strip takes text and buttons only: a Text can be coloured but not pressed, a Button pressed but not coloured.
-    // So "Aa" says the state (Clawd orange and struck through while the text is hidden, grey when not) and the power
-    // sign beside it takes the click. Hovering either puts one box behind both, like effortless's Auto.
-    await refreshTheme($)
-    const drawn = { chat: await chatOf($), id: String(await $.session.id().catch(() => '')) }
-    const enabled = drawn.chat.on
-    const hover = { scope: 'textless', backgroundColor: hoverBg() }
-    // The power sign and "Aa" sit in one box of their own, so the strip keeps them side by side.
-    return (
-      <Box flexDirection="row" alignItems="center">
-        {inner}
-        <Box key="textless-switch" flexDirection="row" alignItems="center">
-          <Button key="textless" plain dimColor={!enabled} label=" ⏻ " hover={hover} onPress={() => toggle($, undefined, drawn)} />
-          {/* The strip draws no images (an Svg here vanished in the app), so the logo is the struck "Aa" as text. */}
-          <Text color={enabled ? '#d77757' : undefined} dimColor={!enabled} bold={enabled} strikethrough={enabled} hover={hover}>{'Aa '}</Text>
-        </Box>
-        <Button key="textless-settings" plain dimColor label=" ⚙︎ " hover={{ scope: 'textless-settings', backgroundColor: hoverBg() }} onPress={() => openWebSettings($)} />
-      </Box>
-    )
-  })
+  // The model strip under the prompt is left to the app: on the desktop it is a row of its own, and textless's buttons
+  // sit in the chat instead (the minimized card and the newest answer).
 }

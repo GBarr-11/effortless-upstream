@@ -24,11 +24,18 @@ function fakeHost(on: any, opts: { offline?: boolean } = {}) {
   return { store, written, ran }
 }
 
+// textless's buttons sit under the newest answer: finish a turn, then draw that answer.
+async function buttonsRow($: any, on: any) {
+  on('turn.complete', () => ({ text: '' }))
+  await $.turn.complete({ answer: 'Done.', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't' })
+  return $.ui.mount({ plugin: 'textless', surface: 'desktop', component: 'AssistantMessage', props: { text: 'Done.' } })
+}
+
 describe('own scenes on the settings page', () => {
   test('the gear writes a local copy of the page with the own scenes in it and opens that file', async ($, on) => {
     const host = fakeHost(on)
     mock.clock(on)
-    const strip: any = await ($ as any).ui.mount({ plugin: 'textless', surface: 'desktop', component: 'SessionMode', props: {} })
+    const strip: any = await buttonsRow($, on)
     await strip.press({ key: 'textless-settings' })
     const file = [...host.written.keys()].find(p => p.endsWith('settings.html')) ?? ''
     expect(file.split('\\').join('/').endsWith('/.claude/textless/settings.html')).toBe(true)
@@ -45,7 +52,7 @@ describe('own scenes on the settings page', () => {
   test('offline, the gear opens the site itself', async ($, on) => {
     const host = fakeHost(on, { offline: true })
     mock.clock(on)
-    const strip: any = await ($ as any).ui.mount({ plugin: 'textless', surface: 'desktop', component: 'SessionMode', props: {} })
+    const strip: any = await buttonsRow($, on)
     await strip.press({ key: 'textless-settings' })
     expect([...host.written.keys()].some(p => p.endsWith('settings.html'))).toBe(false)
     expect(host.ran[0]?.[1]).toMatch(/^https:\/\/textless-preview\.isac-ehrstedt\.workers\.dev\/settings\/#k=/)

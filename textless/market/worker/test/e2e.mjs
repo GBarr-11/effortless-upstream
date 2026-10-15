@@ -143,6 +143,12 @@ await step("settings: the person's own sets are saved, kept when a save leaves t
   assert.equal((await save({ set: "clawd", scene: null, mixes: [{ id: "mix-a", name: "ok", scenes: ["../etc/passwd"] }] })).status, 400)
   assert.equal((await save({ set: "clawd", scene: null, mixes: [{ id: "evil", name: "ok", scenes: [] }] })).status, 400)
 })
+await step("settings: cover mode is saved when sent and kept out of a save that leaves it out", async () => {
+  assert.equal((await save({ set: "clawd", scene: null, cover: true })).status, 200)
+  assert.equal((await (await fetch(`${API}/settings/${key}`)).json()).cover, true)
+  assert.equal((await save({ set: "clawd", scene: null, cover: false })).status, 200)
+  assert.equal((await (await fetch(`${API}/settings/${key}`)).json()).cover, false)
+})
 await step("the uploader removes their own scene with the key the upload gave back; nobody else can", async () => {
   const r = await upload(rain, "rain.svg", { name: "Mine to remove" })
   assert.equal(r.status, 201, JSON.stringify(r.body))

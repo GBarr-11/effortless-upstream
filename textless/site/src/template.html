@@ -210,19 +210,32 @@ body{overflow-x:clip}
 /* Controls */
 .controls{padding:40px 0 100px}
 /* Cubit breaks through: a torn hole in square pixels, Cubit's own sky inside, the real Cubit peeking in from its edge. */
-.cubit{overflow-x:clip;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.45fr);align-items:center;gap:40px;padding:60px 0 120px}
-.cu-kicker{margin:0 0 4px;color:var(--cubit);font:500 20px/1.2 "Pixelify Sans",var(--mono,monospace)}
-.cubit h2{white-space:nowrap;margin:10px 0 0;font:500 clamp(28px,3.3vw,46px)/1.08 var(--display);letter-spacing:-.025em;color:var(--paper)}
+.cubit{overflow-x:clip;display:grid;grid-template-columns:max-content minmax(0,1fr);align-items:center;gap:clamp(40px,5vw,96px);padding:60px 0 120px}
+.cu-kicker{white-space:nowrap;margin:0 0 4px;color:var(--cubit);font:500 clamp(18px,1.4vw,24px)/1.2 "Pixelify Sans",var(--mono,monospace)}
+.cubit h2{white-space:nowrap;margin:10px 0 0;font:500 clamp(28px,3.9vw,64px)/1.08 var(--display);letter-spacing:-.025em;color:var(--paper)}
 .cubit{--cubit:#b4e8f7}
 .cubit h2 .cu-logo{display:inline-block;height:1.12em;aspect-ratio:1325 / 480;margin-left:.16em;vertical-align:-.2em;background:var(--cubit);-webkit-mask:var(--logo) center/contain no-repeat;mask:var(--logo) center/contain no-repeat}
 .cubit .lead{margin:12px 0 26px}
-.rip{position:relative;width:100%;aspect-ratio:__RIPASPECT__}
+.rip{position:relative;width:100%;max-width:820px;justify-self:end;aspect-ratio:__RIPASPECT__}
 .rip-hole,.rip-edge{position:absolute;inset:0}
 .rip-hole{background:url("assets/cubit/sky-flat-1x.webp") left bottom/auto 140% no-repeat,url("assets/cubit/sky-flat-1x.webp") right bottom/auto 140% no-repeat,linear-gradient(180deg,#7fbcd3,rgb(81,150,176));-webkit-mask:__RIPMASK__ center/100% 100% no-repeat;mask:__RIPMASK__ center/100% 100% no-repeat}
 .rip-edge{background:__RIPEDGE__ center/100% 100% no-repeat;filter:drop-shadow(0 0 10px #d9775766);pointer-events:none}
 .rip{--ripmask:__RIPMASK__}
 .rip-peek{position:absolute;pointer-events:none;-webkit-mask-image:var(--ripmask),linear-gradient(#000,#000);mask-image:var(--ripmask),linear-gradient(#000,#000);-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat}
-@media (max-width:860px){.cubit{grid-template-columns:minmax(0,1fr);text-align:center}.cubit .btn{margin:0 auto}}
+.edge-peek{position:fixed;z-index:40;left:0;top:50%;transform:translateY(-50%);--h:min(360px,46vh);--cubit:#b4e8f7;transition:opacity .3s}
+.edge-peek[hidden]{display:none}
+.edge-peek.gone{opacity:0}
+.edge-peek.right{left:auto;right:0}
+.ep-go{display:block;text-decoration:none;color:inherit}
+.ep-cubit{display:block;height:var(--h);width:calc(var(--h) * 220 / 390)}
+.edge-peek.right .ep-cubit{transform:scaleX(-1)}
+.ep-bubble{position:absolute;top:calc(var(--h) * .02);left:calc(var(--h) * .62);display:flex;flex-direction:column;align-items:center;padding:4px 2px;color:#20232a;font:650 18px/1.2 var(--sans,system-ui);white-space:nowrap;opacity:0;transform:translateY(6px) scale(.92);transform-origin:0 100%;transition:opacity .3s,transform .35s cubic-bezier(.2,1.4,.4,1);pointer-events:none}
+.ep-dot{position:absolute;z-index:-1;border-radius:50%;background:#dfe3eb;filter:drop-shadow(0 6px 12px #0006);pointer-events:none}
+.ep-cloud{position:absolute;z-index:-1;overflow:visible;filter:drop-shadow(0 10px 22px #0007);pointer-events:none}
+.edge-peek.right .ep-bubble{left:auto;right:calc(var(--h) * .62);transform-origin:100% 100%}
+.edge-peek.talk .ep-bubble{opacity:1;transform:none;pointer-events:auto;cursor:pointer}
+@media (max-width:860px){.edge-peek{--h:min(240px,34vh)}.ep-bubble{font-size:16px}}
+@media (max-width:860px){.cubit{grid-template-columns:minmax(0,1fr);text-align:center}.cubit .btn{margin:0 auto}.rip{justify-self:center}}
 .uses{padding:120px 0 30px;text-align:center}
 .uses h2{margin:0;font:500 clamp(34px,4.6vw,60px)/1.1 var(--display);letter-spacing:-.025em;color:var(--paper)}
 .uses .rot{color:var(--orange);display:inline-block;transition:opacity .25s,transform .25s}
@@ -275,6 +288,7 @@ body{overflow-x:clip}
 .way-claude .way-h{white-space:normal}
 .way-h code{font:12.5px var(--mono);color:var(--mute)}
 .then{margin:18px 0 0;color:var(--body)}
+.fit{max-width:640px;margin:22px 0 0;color:var(--mute);font-size:15px}
 .then code{font:14px var(--mono);color:var(--paper);background:#2e2622;padding:2px 7px;border-radius:5px}
 @media (max-width:720px){.ways{grid-template-columns:minmax(0,1fr)}}
 /* Install, older */
@@ -367,6 +381,7 @@ __COMPARE__
     <h2 id="in-h">Install</h2>
     <p class="lead">textless __VERSION__ is still in testing, so these will work once it is released. It installs from the effortless marketplace and runs on your own Claude login.</p>
     __INSTALL__
+    <p class="fit">Made for long work turns, when the steps pile up and you only want to know when it is your move. When Claude plans or writes a spec, textless spots it and steps aside, so you can read what you are asked to approve.</p>
   </section>
 
   <section class="cubit" id="cubit" aria-labelledby="cu-h">
@@ -383,6 +398,13 @@ __COMPARE__
     </div>
   </section>
 </main>
+
+<div class="edge-peek" id="edge-peek" hidden>
+  <a class="ep-go" href="#cubit" tabindex="-1" aria-hidden="true"><canvas class="ep-cubit" width="220" height="390"></canvas></a>
+  <div class="ep-bubble" role="group" aria-label="Cubit">
+    <b>Pssst, I'm further down!</b>
+  </div>
+</div>
 
 <footer>
   <div class="foot">
@@ -517,32 +539,59 @@ setAuto(!reduce);
   if (!matchMedia('(prefers-reduced-motion: reduce)').matches) timer = setTimeout(next, 1200);
 })();
 
-// Cubit leans out of the rip: the real peek clips from the Cubit repo (calm, happy, curious; colour on top, alpha below)
-// drawn to one canvas bigger than the hole. The canvas is masked to the hole plus a band above its top edge, so his head
-// rises over the edge as if he were coming out of the page. A different mood each time; he comes back every few seconds
-// while the section is on screen. With reduced motion nothing plays.
-(function () {
-  var cvs = document.getElementById('rip-peek'); if (!cvs) return;
-  // His colour: the lighter blue, rendered to read on the sky.
-  var COLOUR = 'blue';
-  var rip = cvs.parentNode, still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  var MOODS = ['calm', 'happy', 'curious'], mood = Math.floor(Math.random() * 3), vids = {};
-  // The clips are made for this hole: a 1320x1200 frame whose rows 300..1200 are the hole, edge to edge. He rises from
-  // behind the bottom rim on the right and never crosses the side rims, so the canvas maps 1:1 onto the rip.
-  function place() {
-    // Smaller than the hole's own scale, so his whole head fits under the top rim; set low, so the bottom rim hides his base.
-    var W = rip.clientWidth, H = rip.clientHeight, s = W / 1320 * 0.74, C = Math.round(1200 * s), top = Math.round(H * 1.02 - 945 * s), left = Math.round(W * 0.6 - 790 * s);
-    cvs.style.width = Math.round(1320 * s) + 'px'; cvs.style.height = C + 'px'; cvs.style.left = left + 'px'; cvs.style.top = top + 'px';
-    var pos = (-left) + 'px ' + (-top) + 'px, 0px 0px', size = W + 'px ' + H + 'px, 0px 0px';
-    cvs.style.webkitMaskPosition = pos; cvs.style.maskPosition = pos; cvs.style.webkitMaskSize = size; cvs.style.maskSize = size;
+// One Cubit in one rip: the packed clips (colour on top, alpha below) drawn to a canvas bigger than the hole, masked to
+// the hole plus a band above it so his head rises over the top edge. The clips are made for this hole: a 1320x1200 frame
+// whose rows 300..1200 are the hole, edge to edge. He rises from behind the bottom rim on the right and never crosses the
+// side rims, so the canvas maps 1:1 onto the rip. Returns null without WebGL.
+var CUBIT_COLOUR = 'blue', CUBIT_MOODS = ['calm', 'happy', 'curious'];
+function cubitFit(rip, el) {
+  // Smaller than the hole's own scale, so his whole head fits under the top rim; set low, so the bottom rim hides his base.
+  var W = rip.clientWidth, H = rip.clientHeight, s = W / 1320 * 0.74, top = Math.round(H * 1.02 - 945 * s), left = Math.round(W * 0.6 - 790 * s);
+  el.style.width = Math.round(1320 * s) + 'px'; el.style.height = Math.round(1200 * s) + 'px'; el.style.left = left + 'px'; el.style.top = top + 'px';
+  var pos = (-left) + 'px ' + (-top) + 'px, 0px 0px', size = W + 'px ' + H + 'px, 0px 0px';
+  el.style.webkitMaskPosition = pos; el.style.maskPosition = pos; el.style.webkitMaskSize = size; el.style.maskSize = size;
+}
+// His thought cloud, grown around a w x h box the way the app grows it (cube/native.py cloud_lobes): big circles on
+// a superellipse core a little bigger than the box, a fixed big/small rhythm, bulging out modestly, and two dots trailing
+// are drawn by the caller, from the cloud down to him. Returns the SVG and how far it reaches past the box.
+function cubitCloud(w0, h0) {
+  // Room around the words, then lobes as big as the app's (30 to 70 px), so a short line gets a few big round lobes.
+  var small = innerWidth < 600, w = w0 + (small ? 36 : 64), h = h0 + (small ? 60 : 84);
+  var PATTERN = [1.0, 0.72, 0.9, 0.68, 1.06, 0.78, 0.94, 0.7], N = 2.2, BULGE = 0.45, STEP = 1.3;
+  var r0 = Math.max(40, Math.min(small ? 58 : 72, 0.75 * Math.min(w, h))), a = w / 2 + r0 * 0.2, b = h / 2 + r0 * 0.2;
+  var pts = [], acc = 0, px = null, py = null, i;
+  for (i = 0; i <= 240; i++) {
+    var t = 2 * Math.PI * i / 240 - Math.PI / 2, c = Math.cos(t), sn = Math.sin(t);
+    var x = a * Math.sign(c) * Math.pow(Math.abs(c), 2 / N), y = b * Math.sign(sn) * Math.pow(Math.abs(sn), 2 / N);
+    if (px !== null) acc += Math.hypot(x - px, y - py);
+    px = x; py = y; pts.push([acc, x, y]);
   }
-  place(); addEventListener('resize', place);
-  if (still) { cvs.outerHTML = '<img class="rip-peek" style="' + cvs.getAttribute('style') + '" src="assets/cubit/hole-peek-calm-' + COLOUR + '-still.png" alt="">'; return; }
-  var gl = cvs.getContext('webgl', { premultipliedAlpha: true, alpha: true }); if (!gl) return;
+  var total = acc, count = Math.max(6, Math.round(total / (r0 * STEP))), k = 0, lobes = [];
+  for (var j = 0; j < count; j++) {
+    var target = total * j / count;
+    while (k + 1 < pts.length && pts[k + 1][0] < target) k++;
+    var p = pts[k], q = pts[Math.min(k + 1, pts.length - 1)], fr = q[0] > p[0] ? Math.max(0, Math.min(1, (target - p[0]) / (q[0] - p[0]))) : 0;
+    var lx = p[1] + (q[1] - p[1]) * fr, ly = p[2] + (q[2] - p[2]) * fr;
+    var r = r0 * PATTERN[j % PATTERN.length] * (1 - 0.14 * Math.max(0, ly / b)) * (1 + 0.05 * Math.sin(j * 1.7));
+    var nx = lx / (a * a), ny = ly / (b * b), ln = Math.hypot(nx, ny) || 1;
+    lobes.push([lx - nx / ln * (1 - BULGE) * r, ly - ny / ln * (1 - BULGE) * r, r]);
+  }
+  var dots = [];
+  var L = a, U = b, R = a, D = b;
+  lobes.concat(dots).forEach(function (o) { L = Math.max(L, -o[0] + o[2]); U = Math.max(U, -o[1] + o[2]); R = Math.max(R, o[0] + o[2]); D = Math.max(D, o[1] + o[2]); });
+  var W = L + R, H = U + D, core = '';
+  for (i = 0; i < pts.length; i += 4) core += (i ? 'L' : 'M') + (pts[i][1] + L).toFixed(1) + ' ' + (pts[i][2] + U).toFixed(1);
+  var circles = lobes.concat(dots).map(function (o) { return '<circle cx="' + (o[0] + L).toFixed(1) + '" cy="' + (o[1] + U).toFixed(1) + '" r="' + o[2].toFixed(1) + '"/>'; }).join('');
+  return { svg: '<svg class="ep-cloud" width="' + Math.ceil(W) + '" height="' + Math.ceil(H) + '" viewBox="0 0 ' + W.toFixed(1) + ' ' + H.toFixed(1) + '" aria-hidden="true"><g fill="#dfe3eb"><path d="' + core + 'Z"/>' + circles + '</g></svg>',
+    left: L - w0 / 2, up: U - h0 / 2, w: W, h: H };
+}
+function cubitIn(rip, cvs) {
+  if (rip) { cubitFit(rip, cvs); addEventListener('resize', function () { cubitFit(rip, cvs); }); }
+  var gl = cvs.getContext('webgl', { premultipliedAlpha: true, alpha: true }); if (!gl) return null;
   function sh(t, src) { var o = gl.createShader(t); gl.shaderSource(o, src); gl.compileShader(o); return o; }
   var prog = gl.createProgram();
   gl.attachShader(prog, sh(gl.VERTEX_SHADER, 'attribute vec2 p;varying vec2 u;void main(){u=vec2(p.x*.5+.5,.5-p.y*.5);gl_Position=vec4(p,0.,1.);}'));
-  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, 'precision mediump float;uniform sampler2D t;varying vec2 u;void main(){vec3 c=texture2D(t,vec2(u.x,u.y*.5)).rgb;float a=texture2D(t,vec2(u.x,.5+u.y*.5)).r;gl_FragColor=vec4(c,a);}'));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, 'precision mediump float;uniform sampler2D t;varying vec2 u;void main(){vec3 c=texture2D(t,vec2(u.x,u.y*.5)).rgb;float a=texture2D(t,vec2(u.x,.5+u.y*.5)).r;gl_FragColor=vec4(c*a,a);}'));
   gl.linkProgram(prog); gl.useProgram(prog);
   var buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
   var loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
@@ -550,13 +599,7 @@ setAuto(!reduce);
   [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T].forEach(function (k) { gl.texParameteri(gl.TEXTURE_2D, k, gl.CLAMP_TO_EDGE); });
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-  function video(name) {
-    if (vids[name]) return vids[name];
-    var v = document.createElement('video'); v.src = 'assets/cubit/hole-peek-' + name + '-' + COLOUR + '-packed.mp4'; v.muted = true; v.playsInline = true; v.preload = 'auto';
-    v.addEventListener('ended', function () { draw(v); if (seen) again = setTimeout(next, 3500); });
-    return (vids[name] = v);
-  }
-  var cur = null, raf = 0, seen = false, again = 0;
+  var vids = {}, cur = null, raf = 0, after = null;
   function draw(v) {
     var dpr = Math.min(2, devicePixelRatio || 1), w = Math.round(cvs.clientWidth * dpr), h = Math.round(cvs.clientHeight * dpr);
     if (cvs.width !== w || cvs.height !== h) { cvs.width = w; cvs.height = h; }
@@ -564,13 +607,124 @@ setAuto(!reduce);
     try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, v); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); } catch (e) {}
   }
   function loop() { if (cur) draw(cur); if (cur && !cur.paused && !cur.ended) raf = requestAnimationFrame(loop); }
-  function next() {
-    clearTimeout(again); cur = video(MOODS[mood]); mood = (mood + 1) % MOODS.length; video(MOODS[mood]);
-    cur.currentTime = 0; cur.play().then(function () { cancelAnimationFrame(raf); raf = requestAnimationFrame(loop); }).catch(function () {});
+  function finish() { var f = after; after = null; if (f) f(); }
+  function video(name) {
+    if (vids[name]) return vids[name];
+    var v = document.createElement('video'); v.src = /\.mp4$/.test(name) ? name : 'assets/cubit/hole-peek-' + name + '-' + CUBIT_COLOUR + '-packed.mp4'; v.muted = true; v.playsInline = true; v.preload = 'auto';
+    v.addEventListener('ended', function () { draw(v); finish(); });
+    return (vids[name] = v);
   }
+  return {
+    load: video,
+    // Plays one peek from the start; done runs when he has sunk back (or right away if the browser refuses to play).
+    play: function (name, done) {
+      cur = video(name); after = done || null; cur.currentTime = 0;
+      cur.play().then(function () { cancelAnimationFrame(raf); raf = requestAnimationFrame(loop); }).catch(finish);
+    },
+    stop: function () { after = null; if (cur) cur.pause(); cancelAnimationFrame(raf); }
+  };
+}
+
+// The Cubit section: the rip tears open the first time it scrolls into view, then Cubit peeks, a different mood each
+// time, coming back every few seconds while the section is on screen. With reduced motion the rip is open and he is a
+// still picture.
+(function () {
+  var cvs = document.getElementById('rip-peek'); if (!cvs) return;
+  var rip = cvs.parentNode;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    cubitFit(rip, cvs); cvs.outerHTML = '<img class="rip-peek" style="' + cvs.getAttribute('style') + '" src="assets/cubit/hole-peek-calm-' + CUBIT_COLOUR + '-still.png" alt="">'; return;
+  }
+  var cubit = cubitIn(rip, cvs); if (!cubit) return;
+  rip.classList.add('shut');
+  var mood = Math.floor(Math.random() * 3), seen = false, open = false, again = 0, playing = false;
+  function next() {
+    clearTimeout(again); playing = true;
+    cubit.play(CUBIT_MOODS[mood], function () { playing = false; if (seen) again = setTimeout(next, 3500); });
+    mood = (mood + 1) % CUBIT_MOODS.length; cubit.load(CUBIT_MOODS[mood]);
+  }
+  cubit.load(CUBIT_MOODS[mood]);
   new IntersectionObserver(function (es) {
-    es.forEach(function (e) { seen = e.isIntersecting; if (seen && (!cur || cur.paused)) next(); if (!seen) clearTimeout(again); });
+    es.forEach(function (e) {
+      seen = e.isIntersecting;
+      if (!seen) { clearTimeout(again); return; }
+      if (!open) { open = true; rip.classList.remove('shut'); rip.classList.add('tear'); again = setTimeout(next, 750); }
+      else if (!playing) next();
+    });
   }, { threshold: 0.35 }).observe(rip);
+})();
+
+// Cubit at the edge of the screen: 10 seconds in, and again about 30 seconds after each visit, wherever you are on the page,
+// he leans in from the left or right edge at a random height (the trailer's peek), asks to be taken home and leans back
+// out when the clip ends, about 12 seconds later. A click on him or his cloud goes to the Cubit section.
+// He waits while the rip in the Cubit section is on screen, stops coming once you have seen it or clicked him, and
+// skips the visits with reduced motion.
+(function () {
+  var box = document.getElementById('edge-peek'); if (!box) return;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  // Once you have seen the rip or clicked him, this browser remembers and he stays home.
+  try { if (localStorage.getItem('cubit-home')) return; } catch (e) {}
+  function home_() { stopped = true; try { localStorage.setItem('cubit-home', '1'); } catch (e) {} }
+  var SRC = 'assets/cubit/side-peek-blue-packed.mp4';
+  var cvs = box.querySelector('canvas'), due = false, stopped = false, showing = false, cubit = null, inView = [], timers = [];
+  var io = new IntersectionObserver(function (es) {
+    es.forEach(function (e) { var i = inView.indexOf(e.target); if (e.isIntersecting) { if (i < 0) inView.push(e.target); } else if (i >= 0) inView.splice(i, 1); });
+    if (inView.length) { home_(); close(); } else go();
+  });
+  // Only one Cubit at a time: he stays away while the rip is on screen.
+  ['#cubit .rip'].forEach(function (q) { var el = document.querySelector(q); if (el) io.observe(el); });
+  timers.push(setTimeout(function () { due = true; go(); }, 10000));
+  function go() {
+    if (!due || stopped || showing || inView.length) return;
+    due = false;
+    var bub = box.querySelector('.ep-bubble');
+    bub.querySelectorAll('.ep-cloud,.ep-dot').forEach(function (el) { el.remove(); });
+    box.classList.remove('right', 'gone', 'talk');
+    if (Math.random() < 0.5) box.classList.add('right');
+    // Below the Cubit section he points the other way.
+    if (document.getElementById('cubit').getBoundingClientRect().bottom < 0) box.querySelector('b').textContent = "Pssst, I'm further up!";
+    box.hidden = false;
+    cubit = cubit || cubitIn(null, cvs); if (!cubit) { box.hidden = true; stopped = true; return; }
+    var cl = cubitCloud(bub.offsetWidth, bub.offsetHeight);
+    // The cloud sits above him, so his head has to be low enough to leave it room: pick where his frame's top
+    // goes, then move the box until it is there.
+    var hh = cvs.offsetHeight, hi = innerHeight - hh - 8, lo = Math.min(hi, cl.h + 54 - hh * 0.09);
+    var want = lo + Math.random() * Math.max(0, hi - lo);
+    box.style.top = '50%'; box.style.top = (innerHeight / 2 + want - cvs.getBoundingClientRect().top).toFixed(0) + 'px';
+    bub.insertAdjacentHTML('afterbegin', cl.svg);
+    bub.firstChild.style.left = -cl.left + 'px'; bub.firstChild.style.top = -cl.up + 'px';
+    // The top of his head in the clip is about 27% across the frame from the edge and 9% down.
+    var right = box.classList.contains('right'), cr = cvs.getBoundingClientRect(), br = box.getBoundingClientRect(), m = 8;
+    var ax = right ? cr.right - cr.width * 0.27 : cr.left + cr.width * 0.27, ay = cr.top + cr.height * 0.09;
+    // The cloud floats above him, leaning a little into the page, kept on screen.
+    var cx = Math.max(m, Math.min(innerWidth - m - cl.w, ax + (right ? -0.7 : -0.3) * cl.w));
+    var cy = Math.max(m, ay - 46 - cl.h);
+    bub.style.left = (cx + cl.left - br.left).toFixed(0) + 'px'; bub.style.right = 'auto';
+    bub.style.top = (cy + cl.up - br.top).toFixed(0) + 'px';
+    // Two dots trail from the cloud's underside down onto his head.
+    var px = Math.max(cx + cl.w * 0.25, Math.min(cx + cl.w * 0.75, ax)), py = cy + cl.h - 14;
+    [[0.42, 10], [0.8, 6.5]].forEach(function (d) {
+      var dot = document.createElement('i'); dot.className = 'ep-dot';
+      dot.style.width = dot.style.height = d[1] * 2 + 'px';
+      dot.style.left = (px + (ax - px) * d[0] - d[1] - cx - cl.left).toFixed(0) + 'px';
+      dot.style.top = (py + (ay - py) * d[0] - d[1] - cy - cl.up).toFixed(0) + 'px';
+      bub.appendChild(dot);
+    });
+    bub.style.transformOrigin = (ax - cx - cl.left).toFixed(0) + 'px ' + (ay - cy - cl.up).toFixed(0) + 'px';
+    showing = true;
+    cubit.play(SRC, close);
+    // He is in by about a second; the bubble goes before he leans back out.
+    timers.push(setTimeout(function () { if (showing) box.classList.add('talk'); }, 1000));
+    timers.push(setTimeout(function () { box.classList.remove('talk'); }, 10600));
+  }
+  function close() {
+    if (!showing) return; showing = false;
+    timers.forEach(clearTimeout); box.classList.remove('talk'); box.classList.add('gone');
+    setTimeout(function () { if (cubit) cubit.stop(); box.hidden = true; }, 300);
+    if (!stopped) timers.push(setTimeout(function () { due = true; go(); }, 30000));
+  }
+  function home(e) { e.preventDefault(); home_(); close(); document.getElementById('cubit').scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  box.querySelector('.ep-go').addEventListener('click', home);
+  box.querySelector('.ep-bubble').addEventListener('click', home);
 })();
 
 // The Working pane's step line moves on, as the plugin's does.
