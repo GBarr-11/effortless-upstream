@@ -119,6 +119,9 @@ h2{font-size:clamp(30px,3.6vw,42px);line-height:1.12}
 .ask-o b{color:var(--orange)}
 .ask-sep{display:block;width:120px;height:1px;background:var(--orange);opacity:.7;margin-left:16px}
 .card{display:flex;flex-direction:column;align-items:center;gap:6px;margin:auto 0}
+.card .ctl{align-self:flex-end;display:flex;align-items:center;gap:9px;margin-bottom:2px;color:var(--ccm)}
+.card .ctl svg.i{width:14px;height:14px}
+.card .ctl .aa{padding:0;color:var(--orange);font-weight:700;font-size:13px;text-decoration:line-through;text-decoration-thickness:1.5px}
 .card img{width:100%;height:190px;object-fit:contain;image-rendering:pixelated}
 .card .busy{margin:4px 0 0;color:var(--orange);font-weight:600;font-size:14px}
 .card .step{margin:0;color:var(--ccm);font-size:13px}
@@ -257,9 +260,13 @@ body{overflow-x:clip}
 .cb-strip .fast{color:var(--ccd)}
 .cb-strip .ring{width:14px;height:14px;border-radius:50%;border:1.8px solid #3d6fd0;border-right-color:transparent}
 .cb-tl{display:inline-flex;gap:6px}
+.cb-card{display:flex;flex-direction:column;align-items:center;padding:8px 10px 14px;margin-bottom:14px}
+.cb-top{align-self:stretch;display:flex;justify-content:flex-end}
+.cb-art{display:block;width:430px;height:269px;margin-top:6px;image-rendering:pixelated}
+.cb-busy{margin:8px 0 0;color:var(--orange);font-weight:600;font-size:15px}
 .controls>h2,.controls>.lead{text-align:center;margin-left:auto;margin-right:auto}
-.cb-zoom{position:relative;height:clamp(240px,26vw,320px);margin:26px calc(var(--frame) * -1) 0;overflow:hidden;-webkit-mask-image:radial-gradient(ellipse 62% 78% at 50% 56%,#000 30%,#000a 55%,transparent 92%);mask-image:radial-gradient(ellipse 62% 78% at 50% 56%,#000 30%,#000a 55%,transparent 92%)}
-.cb-zoom .cbar{position:absolute;left:0;top:0;width:760px;max-width:none;margin:0;transform-origin:0 0}
+.cb-zoom{position:relative;height:clamp(300px,30vw,420px);margin:26px calc(var(--frame) * -1) 0;overflow:hidden;-webkit-mask-image:radial-gradient(ellipse 62% 78% at 50% 56%,#000 30%,#000a 55%,transparent 92%);mask-image:radial-gradient(ellipse 62% 78% at 50% 56%,#000 30%,#000a 55%,transparent 92%)}
+.cb-zoom .cbar{position:absolute;left:0;top:0;width:460px;max-width:none;margin:0;transform-origin:0 0}
 .cb-cmd{margin:6px 0 0;min-height:1.4em;text-align:center;font:500 17px var(--mono,monospace);color:var(--orange)}
 .cb-type{color:var(--ccd)}
 .cb-type.typed{color:var(--cct);font-family:var(--mono,monospace)}
