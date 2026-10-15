@@ -293,6 +293,9 @@ body{overflow-x:clip}
 .then code{font:14px var(--mono);color:var(--paper);background:#2e2622;padding:2px 7px;border-radius:5px}
 @media (max-width:720px){.ways{grid-template-columns:minmax(0,1fr)}}
 /* Install, older */
+.chess{padding:40px 0 100px;text-align:center}
+.chess>.lead{margin-left:auto;margin-right:auto}
+.ch-board{display:block;width:min(560px,100%);height:auto;margin:32px auto 0;border-radius:14px;image-rendering:pixelated}
 .install{padding:40px 0 110px}
 
 footer{position:relative;isolation:isolate;overflow:hidden;border-top:1px solid var(--line);padding:34px var(--frame) 0}
@@ -452,6 +455,7 @@ footer:before{content:"";position:absolute;left:50%;bottom:-30%;width:120%;heigh
     <div class="sets" id="sets" role="group" aria-label="textless sets"></div>
     <h3 class="group">Interactive sets</h3>
     <div class="sets" id="games" role="group" aria-label="Interactive sets"></div>
+    <div id="gameinfo" class="note" hidden></div>
     <h3 class="group">Your sets</h3>
     <div class="sets" id="mysets" role="group" aria-label="Your sets"></div>
 
@@ -635,7 +639,17 @@ function pickSet(e) {
 }
 $('sets').addEventListener('click', pickSet);
 $('mysets').addEventListener('click', pickSet);
-$('games').addEventListener('click', pickSet);
+$('games').addEventListener('click', function (e) {
+  var b = e.target.closest('button[data-set]'); if (!b) return;
+  var info = $('gameinfo');
+  if (!info.hidden && info.dataset.game === b.dataset.set) { info.hidden = true; return }
+  info.dataset.game = b.dataset.set;
+  info.innerHTML = '<b>Chess</b> is played in the chat, not part of the card's scenes. Start it in any chat:<br>'
+    + '<code>/chess</code> start, or open the game in play<br>'
+    + '<code>/chess new</code> start over &nbsp; <code>/chess claude</code> play against Claude &nbsp; <code>/chess white</code> or <code>/chess black</code> pick your side &nbsp; <code>/chess end</code> close it<br>'
+    + 'While a game is open in a chat, the board takes the card there and the scenes come back when you close it. Other chats keep their scenes. One board at a time: starting it in another chat moves it there.';
+  info.hidden = false;
+});
 $('grid').addEventListener('click', function (e) {
   var st = e.target.closest('button[data-star]');
   if (st) {
