@@ -1,7 +1,7 @@
 import type { Register } from 'claude-code'
 import { SCENES } from './art'
 import { bestMove, CHESS_LEVELS, type ChessLevel } from './chess-engine'
-import { describe as describeMove, legalMoves, type Move, outcome, type Outcome, parseFen, picture, play, type Position, START, squareName, toFen, uci } from './chess-rules'
+import { describe as describeMove, inCheck, legalMoves, type Move, outcome, type Outcome, parseFen, picture, play, type Position, START, squareName, toFen, uci } from './chess-rules'
 import { checkFile } from './market-rules'
 import { onceMs, quoteCard, stillCard } from './quill'
 import { QUOTES } from './quotes-list'
@@ -1983,6 +1983,9 @@ type ChessGame = {
   tries: number
   last?: [number, number]
   over?: string
+  // Only the title line is drawn; the sounds are off.
+  mini?: boolean
+  quiet?: boolean
 }
 
 const CHESS_KEY = 'chess'
@@ -2054,8 +2057,48 @@ function chessShown(e: any): any {
   return cut < 0 ? e : { ...e, props: { ...e.props, text: text.slice(0, cut) } }
 }
 
+// A short sound for a move: wav files in hooks/sounds, played by the system's own player (the app's audio call plays
+// nothing in a Windows terminal). Fire and forget; off when the game says quiet.
+// Your own sounds win: a wav named move, capture, check or end in ~/.claude/textless/sounds replaces the bundled one.
+let ownSounds: Promise<{ dir: string; names: Set<string> }> | null = null
+async function ownSound($: any, kind: string): Promise<string | null> {
+  ownSounds ??= scenesDir($).then(async scenes => {
+    const dir = scenes.replace(/scenes$/, 'sounds')
+    const list = ((await $.fs.list(dir).catch(() => [])) as { name: string }[]).map(f => f.name)
+    return { dir, names: new Set(list) }
+  })
+  const own = await ownSounds.catch(() => null)
+  if (!own) return null
+  // move.wav, movealt1.wav, movealt2.wav ...: one of them by chance, so a run of moves is not one click repeated.
+  const files = [...own.names].filter(n => n === `${kind}.wav` || new RegExp(`^${kind}alt\\d+\\.wav$`).test(n))
+  if (!files.length) return null
+  return `${own.dir}${own.dir.includes('\\') ? '\\' : '/'}${files[Math.floor(Math.random() * files.length)]}`
+}
+
+async function chessSound($: any, kind: 'move' | 'capture' | 'check' | 'end' | 'win' | 'lose') {
+  if (chessGame?.quiet) return
+  // A capture has no bundled sound: without one of your own it plays as a move.
+  const file =
+    (await ownSound($, kind).catch(() => null)) ??
+    (kind === 'capture' ? await ownSound($, 'move').catch(() => null) : null) ??
+    `${$.plugin.root}/hooks/sounds/${kind === 'capture' ? 'move' : kind}.wav`
+  const windows = /^[A-Za-z]:|\\/.test(String($.plugin.root))
+  const argv = windows
+    ? ['powershell', '-NoProfile', '-NonInteractive', '-Command', `(New-Object Media.SoundPlayer '${file.replace(/'/g, "''")}').PlaySync()`]
+    : ['sh', '-c', 'afplay "$1" 2>/dev/null || paplay "$1" 2>/dev/null || aplay -q "$1" 2>/dev/null', 'sound', file]
+  void Promise.resolve($.process.run(argv, { timeoutMs: 5000 })).catch(() => undefined)
+}
+
+// Which sound a move makes, from the position before it and the one after.
+function chessKind(before: Position, move: Move, after: Position, over?: string, mine = false) {
+  if (over) return /^Checkmate/.test(over) ? (mine ? 'win' as const : 'lose' as const) : 'end' as const
+  if (inCheck(after)) return 'check' as const
+  if (before.board[move.to]) return 'capture' as const
+  return 'move' as const
+}
+
 async function chessNew($: any, vs: 'engine' | 'claude' = chessGame?.vs ?? 'engine', side: 'w' | 'b' = Math.random() < 0.5 ? 'w' : 'b') {
-  chessGame = { fen: START, moves: [], waiting: side === 'w' ? 'you' : 'claude', tries: 0, vs, level: chessGame?.level, side }
+  chessGame = { fen: START, moves: [], waiting: side === 'w' ? 'you' : 'claude', tries: 0, vs, level: chessGame?.level, side, quiet: chessGame?.quiet }
   chessPicked = null
   await chessSave($)
   // The person plays black: the opponent opens.
@@ -2079,6 +2122,13 @@ async function chessLevel($: any) {
   await chessSave($)
 }
 
+async function chessFlag($: any, flag: 'mini' | 'quiet') {
+  const g = chessGame
+  if (!g) return
+  g[flag] = !g[flag]
+  await chessSave($)
+}
+
 async function chessEnd($: any) {
   chessGame = null
   chessPicked = null
@@ -2087,6 +2137,7 @@ async function chessEnd($: any) {
 
 async function chessPress($: any, sq: number) {
   const g = chessGame
+  dbg($, `chess press sq=${sq} picked=${chessPicked} waiting=${g?.waiting} over=${g?.over ?? '-'}`)
   if (!g || g.over || g.waiting !== 'you') return
   const p = parseFen(g.fen)
   const mine = Boolean(p.board[sq]) && (p.board[sq] === p.board[sq].toUpperCase()) === ((g.side ?? 'w') === 'w')
@@ -2114,6 +2165,7 @@ async function chessYourMove($: any, p: Position, move: Move) {
   g.over = chessEnding(next)
   g.waiting = g.over ? 'you' : 'claude'
   g.tries = 0
+  chessSound($, chessKind(p, move, next, g.over, true))
   await chessSave($)
   if (g.vs !== 'claude') {
     if (!g.over) $.clock.after(450, () => void chessEngineMove($).catch(() => undefined))
@@ -2136,6 +2188,7 @@ async function chessEngineMove($: any) {
   g.last = [move.from, move.to]
   g.over = chessEnding(next)
   g.waiting = 'you'
+  chessSound($, chessKind(p, move, next, g.over))
   await chessSave($)
 }
 
@@ -2172,6 +2225,7 @@ async function chessAnswered($: any, answer: string) {
   g.over = chessEnding(next)
   g.waiting = 'you'
   g.tries = 0
+  chessSound($, chessKind(p, move, next, g.over))
   await chessSave($)
 }
 
@@ -2192,7 +2246,7 @@ function pieceSvg(piece: string) {
 // width, the most 12 cells a square, and a square is about as high as wide (a cell is about 2.4 times as high as wide).
 function boardCells(e: any) {
   const columns = Math.max(30, Number(e.viewport?.columns) || 80)
-  const w = Math.max(4, Math.min(12, Math.floor((columns - 6) / 8)))
+  const w = Math.max(4, Math.min(12, Math.floor((columns - 18) / 8)))
   const h = Math.max(2, Math.round(w / 2.6))
   return { w, h, piece: Math.round(Math.min(w * 9, h * 22) * 0.72) }
 }
@@ -2228,7 +2282,10 @@ function chessBoardView($: any, e: any) {
       }
       // The square is a Box of the right colour and size, the piece a picture in it, and over both a column of blank
       // buttons (one per line) so a click anywhere on the square counts. The Box has no gap to its neighbours.
-      const squareFill = ' '.repeat(cell.w)
+      // No-break spaces a little under twice the square's width in cells: the text face is not a grid, a space is about half
+      // a cell wide, so w spaces covered under half the square. Any longer and the button cuts the label with an ellipsis,
+      // which showed as dots on every square.
+      const squareFill = ' '.repeat(Math.floor(cell.w * 1.95))
       cells.push(
         <Box key={`chess-cell-${sq}`} width={cell.w} height={cell.h} flexShrink={0} backgroundColor={shade} alignItems="center" justifyContent="center">
           {piece ? <Svg source={pieceSvg(piece)} alt={piece} width={cell.piece} height={cell.piece} /> : null}
@@ -2255,10 +2312,12 @@ function chessBoardView($: any, e: any) {
           <Button key="chess-level" plain dimColor label={`Level: ${g.level ?? 'hard'}`} onPress={() => chessLevel($)} />
         )}
         <Button key="chess-new" plain dimColor label="New game" onPress={() => chessNew($)} />
+        <Button key="chess-sound" plain dimColor label={g.quiet ? 'Sound: off' : 'Sound: on'} onPress={() => chessFlag($, 'quiet')} />
+        <Button key="chess-mini" plain dimColor label={g.mini ? 'Show board' : 'Minimize'} onPress={() => chessFlag($, 'mini')} />
         <Button key="chess-end" plain dimColor label="Close" onPress={() => chessEnd($)} />
       </Box>
-      {rows}
-      {Svg ? (
+      {g.mini ? null : rows}
+      {g.mini ? null : Svg ? (
         <Box key="chess-files" flexDirection="row">
           <Box width={2} flexShrink={0} />
           {(down ? 'hgfedcba' : 'abcdefgh').split('').map(l => (
@@ -2397,8 +2456,10 @@ export const register: Register = on => {
     // A message sent: the board leaves the /chess row and moves down with the card and the newest answer.
     if (chessGame && !String((e as any).text ?? '').startsWith('♟')) {
       await chessLoad($)
-      if (chessAnchor !== 'chat') {
+      // A piece still picked when a message goes out is let go: the board is redrawn in its new place without it.
+      if (chessAnchor !== 'chat' || chessPicked !== null) {
         chessAnchor = 'chat'
+        chessPicked = null
         $.ui.invalidate('ui.render')
       }
     }

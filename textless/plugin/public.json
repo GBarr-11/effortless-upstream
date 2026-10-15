@@ -1,5 +1,18 @@
 [
   {
+    "version": "0.15.0",
+    "date": "2026-10-16",
+    "note": "Play chess on the card, minimize it, and a few fixes.",
+    "detail": [
+      "Chess is a set under Interactive sets: pick it on the settings page and the board takes the card. /chess plays in the chat too.",
+      "Play against a built-in opponent with four levels, or against Claude with /chess claude. Your side is picked by chance.",
+      "Piece sounds on every move, with check, win and game over. Sound can be switched off on the board, and your own wav files in ~/.claude/textless/sounds replace the bundled ones.",
+      "Minimize the card to one line and bring it back, from the card or under any answer.",
+      "Quotes and scenes pick at random each turn, without repeating the last ones."
+    ],
+    "public": true
+  },
+  {
     "version": "0.14.0",
     "date": "2026-10-14",
     "note": "Quotes, your own sets and favourites, and a lighter card.",
