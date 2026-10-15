@@ -23,7 +23,7 @@
 <link rel="icon" href="__ICON__">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600&family=Pixelify+Sans:wght@500&display=swap" rel="stylesheet">
 <script>document.documentElement.classList.add('js');if(location.hash==='#whats-new')location.replace('whats-new/')</script>
 <style>
 /* The band art below is the plugin's own SVG, copied unchanged from hooks/register.tsx. */
@@ -371,6 +371,21 @@ button.btn:focus-visible,.sel select:focus-visible{outline:2px solid var(--accen
 .btn.pick:after{content:"";width:5px;height:5px;margin:-3px 1px 0 2px;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg)}
 
 /* ---------- Install ---------- */
+/* Cubit breaks through: a torn hole in square pixels, Cubit's own sky inside, the real Cubit leaning out over its top. */
+.cubit{overflow-x:clip;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.45fr);align-items:center;gap:40px;padding:80px var(--frame) 120px;max-width:1180px;margin:0 auto}
+.cu-kicker{margin:0 0 4px;color:var(--cubit);font:500 20px/1.2 "Pixelify Sans",var(--mono,monospace)}
+.cubit h2{white-space:nowrap;margin:10px 0 0;font:500 clamp(28px,3.3vw,46px)/1.08 var(--display);letter-spacing:-.025em;color:#f4f2ff}
+.cubit{--cubit:#b4e8f7}
+.cubit h2 .cu-logo{display:inline-block;height:1.12em;aspect-ratio:1325 / 480;margin-left:.16em;vertical-align:-.2em;background:var(--cubit);-webkit-mask:var(--logo) center/contain no-repeat;mask:var(--logo) center/contain no-repeat}
+.cubit .lead{margin:12px 0 26px}
+.cu-btn{display:inline-flex;align-items:center;height:46px;padding:0 20px;border-radius:10px;background:var(--accent);color:#15121f;font:600 16px var(--sans,system-ui);text-decoration:none}
+.cu-btn:hover{filter:brightness(1.08)}
+.rip{position:relative;width:100%;aspect-ratio:44 / 30;--ripmask:url("assets/cubit/rip-hole.svg")}
+.rip-hole,.rip-edge{position:absolute;inset:0}
+.rip-hole{background:url("assets/cubit/sky-flat-1x.webp") left bottom/auto 140% no-repeat,url("assets/cubit/sky-flat-1x.webp") right bottom/auto 140% no-repeat,linear-gradient(180deg,#7fbcd3,rgb(81,150,176));-webkit-mask:var(--ripmask) center/100% 100% no-repeat;mask:var(--ripmask) center/100% 100% no-repeat}
+.rip-edge{background:url("assets/cubit/rip-edge.svg") center/100% 100% no-repeat;filter:drop-shadow(0 0 10px #a79cf766);pointer-events:none}
+.rip-peek{position:absolute;pointer-events:none;-webkit-mask-image:var(--ripmask),linear-gradient(#000,#000);mask-image:var(--ripmask),linear-gradient(#000,#000);-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat}
+@media (max-width:860px){.cubit{grid-template-columns:minmax(0,1fr);text-align:center}}
 .inst-sec{padding:120px var(--frame) 40px;scroll-margin-top:40px}
 .inst-sec h2{margin:0;font:500 clamp(30px,3.8vw,46px)/1.1 var(--display);letter-spacing:-.02em;color:#f4f2ff}
 .inst-sec .lead{margin:14px 0 0;max-width:34em;color:var(--muted);font-size:17px;line-height:1.55}
@@ -723,6 +738,20 @@ button.btn:focus-visible,.sel select:focus-visible{outline:2px solid var(--accen
     <div class="cta"><a class="gh" href="https://github.com/HeyCubit/effortless">__GITHUB__<span>Star on GitHub</span></a></div>
   </section>
 
+  <section class="cubit" id="cubit" aria-labelledby="cu-h">
+    <div class="cu-text">
+      <p class="cu-kicker">Meanwhile, in another dimension</p>
+      <h2 id="cu-h">Also building <span class="cu-logo" role="img" aria-label="Cubit" style="--logo:url(assets/cubit-logo-white.svg)"></span></h2>
+      <p class="lead">Send anything to anyone, anywhere.</p>
+      <a class="cu-btn" href="https://heycubit.com" rel="noopener">Join the waitlist</a>
+    </div>
+    <div class="rip" aria-hidden="true">
+      <div class="rip-hole"></div>
+      <div class="rip-edge"></div>
+      <canvas class="rip-peek" id="rip-peek" width="900" height="900"></canvas>
+    </div>
+  </section>
+
 </main>
 
 <footer class="site-foot">
@@ -964,6 +993,62 @@ var Dash=(function(){
   function go(){var p=v.play();if(p&&p.catch)p.catch(still);}
   if('IntersectionObserver' in window)new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){if(!v.controls)go();}else if(!v.controls)v.pause();});},{threshold:.25}).observe(v);
 })();
+// Cubit leans out of the rip: the real peek clips from the Cubit repo (calm, happy, curious; colour on top, alpha below)
+// drawn to one canvas bigger than the hole. The canvas is masked to the hole plus a band above its top edge, so his head
+// rises over the edge as if he were coming out of the page. A different mood each time; he comes back every few seconds
+// while the section is on screen. With reduced motion nothing plays.
+(function () {
+  var cvs = document.getElementById('rip-peek'); if (!cvs) return;
+  // His colour: the lighter blue, rendered to read on the sky.
+  var COLOUR = 'blue';
+  var rip = cvs.parentNode, still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var MOODS = ['calm', 'happy', 'curious'], mood = Math.floor(Math.random() * 3), vids = {};
+  // The clips are made for this hole: a 1320x1200 frame whose rows 300..1200 are the hole, edge to edge. He rises from
+  // behind the bottom rim on the right and never crosses the side rims, so the canvas maps 1:1 onto the rip.
+  function place() {
+    // Smaller than the hole's own scale, so his whole head fits under the top rim; set low, so the bottom rim hides his base.
+    var W = rip.clientWidth, H = rip.clientHeight, s = W / 1320 * 0.74, C = Math.round(1200 * s), top = Math.round(H * 1.02 - 945 * s), left = Math.round(W * 0.6 - 790 * s);
+    cvs.style.width = Math.round(1320 * s) + 'px'; cvs.style.height = C + 'px'; cvs.style.left = left + 'px'; cvs.style.top = top + 'px';
+    var pos = (-left) + 'px ' + (-top) + 'px, 0px 0px', size = W + 'px ' + H + 'px, 0px 0px';
+    cvs.style.webkitMaskPosition = pos; cvs.style.maskPosition = pos; cvs.style.webkitMaskSize = size; cvs.style.maskSize = size;
+  }
+  place(); addEventListener('resize', place);
+  if (still) { cvs.outerHTML = '<img class="rip-peek" style="' + cvs.getAttribute('style') + '" src="assets/cubit/hole-peek-calm-' + COLOUR + '-still.png" alt="">'; return; }
+  var gl = cvs.getContext('webgl', { premultipliedAlpha: true, alpha: true }); if (!gl) return;
+  function sh(t, src) { var o = gl.createShader(t); gl.shaderSource(o, src); gl.compileShader(o); return o; }
+  var prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, 'attribute vec2 p;varying vec2 u;void main(){u=vec2(p.x*.5+.5,.5-p.y*.5);gl_Position=vec4(p,0.,1.);}'));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, 'precision mediump float;uniform sampler2D t;varying vec2 u;void main(){vec3 c=texture2D(t,vec2(u.x,u.y*.5)).rgb;float a=texture2D(t,vec2(u.x,.5+u.y*.5)).r;gl_FragColor=vec4(c,a);}'));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  var buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  var loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  var tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T].forEach(function (k) { gl.texParameteri(gl.TEXTURE_2D, k, gl.CLAMP_TO_EDGE); });
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  function video(name) {
+    if (vids[name]) return vids[name];
+    var v = document.createElement('video'); v.src = 'assets/cubit/hole-peek-' + name + '-' + COLOUR + '-packed.mp4'; v.muted = true; v.playsInline = true; v.preload = 'auto';
+    v.addEventListener('ended', function () { draw(v); if (seen) again = setTimeout(next, 3500); });
+    return (vids[name] = v);
+  }
+  var cur = null, raf = 0, seen = false, again = 0;
+  function draw(v) {
+    var dpr = Math.min(2, devicePixelRatio || 1), w = Math.round(cvs.clientWidth * dpr), h = Math.round(cvs.clientHeight * dpr);
+    if (cvs.width !== w || cvs.height !== h) { cvs.width = w; cvs.height = h; }
+    gl.viewport(0, 0, cvs.width, cvs.height); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, v); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); } catch (e) {}
+  }
+  function loop() { if (cur) draw(cur); if (cur && !cur.paused && !cur.ended) raf = requestAnimationFrame(loop); }
+  function next() {
+    clearTimeout(again); cur = video(MOODS[mood]); mood = (mood + 1) % MOODS.length; video(MOODS[mood]);
+    cur.currentTime = 0; cur.play().then(function () { cancelAnimationFrame(raf); raf = requestAnimationFrame(loop); }).catch(function () {});
+  }
+  new IntersectionObserver(function (es) {
+    es.forEach(function (e) { seen = e.isIntersecting; if (seen && (!cur || cur.paused)) next(); if (!seen) clearTimeout(again); });
+  }, { threshold: 0.35 }).observe(rip);
+})();
+
 </script>
 </body>
 </html>
