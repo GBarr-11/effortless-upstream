@@ -1,0 +1,5 @@
+{
+  "name": "textless",
+  "version": "0.14.0",
+  "description": "While Claude works, the chat shows one tall pixel-art card of Clawd instead of every step. Toggle with the icon in the model strip or /textless."
+}

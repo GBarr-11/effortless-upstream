@@ -1,0 +1,47 @@
+[
+  {
+    "version": "0.14.0",
+    "date": "2026-10-14",
+    "note": "Quotes, your own sets and favourites, and a lighter card.",
+    "detail": [
+      "200 quotes, written on by a pixel quill.",
+      "Make your own sets and star favourites on the settings page.",
+      "Remove scenes you shared in the marketplace.",
+      "textless sends its note to Claude less often, so chats use fewer tokens."
+    ],
+    "public": true
+  },
+  {
+    "version": "0.11.0",
+    "date": "2026-10-13",
+    "note": "Make your own sets, play chess against Claude, and a Nostalgia set.",
+    "detail": [
+      "Make your own sets on the settings page: tick any scenes from any set.",
+      "Chess against Claude with /chess, on a board above the prompt.",
+      "New Minimal and Nostalgia sets.",
+      "Marketplace scenes name who drew them under the card."
+    ],
+    "public": true
+  },
+  {
+    "version": "0.10.0",
+    "date": "2026-10-13",
+    "note": "New versions show above the prompt, and one press installs them.",
+    "detail": [
+      "An update card offers each new version. Update installs it and reloads textless in the chat.",
+      "What's new, Share and Star on GitHub sit on the card once it has updated."
+    ],
+    "public": true
+  },
+  {
+    "version": "0.9.72",
+    "date": "2026-10-14",
+    "note": "One pixel-art card while Claude works, and your questions listed under the answer.",
+    "detail": [
+      "While Claude works, the chat shows one tall card of Clawd instead of every step.",
+      "When the turn ends, the answer shows with a done line. Questions, links and the next step are listed under it.",
+      "Pick scenes on the settings page, add your own pictures, or get more in the marketplace."
+    ],
+    "public": true
+  }
+]

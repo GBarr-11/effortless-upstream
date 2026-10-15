@@ -25,7 +25,7 @@ last=$(node -p 'try { require("./public.json")[0].version } catch { "none" }')
 echo "publish: $old -> $new (public now: $last, stable at $(git rev-parse --short origin/stable 2>/dev/null || echo none))"
 [ "$dry" = 1 ] && { echo "dry run: nothing changed"; exit 0; }
 
-out=$(CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test . 2>&1) || true
+out=$(tools/test.sh 2>&1) || true
 echo "$out" | grep -qE '^ *0 fail' || { echo "$out" | tail -20; echo "publish stopped: tests fail" >&2; exit 1; }
 
 node -e '

@@ -89,7 +89,7 @@ if [ ${#leave[@]} -gt 0 ]; then
 fi
 if [ "$dry" = 1 ]; then echo "dry run: nothing changed"; exit 0; fi
 
-out=$(CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test . 2>&1) || true
+out=$(tools/test.sh 2>&1) || true
 if ! grep -q '^ 0 fail' <<<"$out"; then
   grep -E '^\s*[0-9]+ (pass|fail)|\(fail\)' <<<"$out" || echo "$out" | tail -20
   echo "release stopped: tests failed" >&2

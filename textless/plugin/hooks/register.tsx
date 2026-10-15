@@ -1,0 +1,2133 @@
+import type { Register } from 'claude-code'
+import { SCENES } from './art'
+import { describe as describeMove, legalMoves, type Move, outcome, type Outcome, parseFen, picture, play, type Position, START, squareName, toFen, uci } from './chess-rules'
+import { checkFile } from './market-rules'
+import { onceMs, quoteCard, stillCard } from './quill'
+import { QUOTES } from './quotes-list'
+import { GITHUB_OVER_HTTPS, isNewer, latestRelease, NEW_CHAT, noClaudeHint, pluginDirIn, RELEASES_PATH, RELEASES_URL, RELOAD_ARGS, type Release, SITE_URL, syncPlan, UPDATE_CHECK_MS, UPDATE_LOAD_WAIT_MS, UPDATE_LOADING, UPDATED_CARD_MS, type UpdateCard, updateCardTree, updateFailure, updateSnoozed, claudeCandidates } from './update'
+
+// textless: once a turn shows it is more than a quick answer (its first tool call, or 5 s passed), the
+// turn's first step is drawn as a tall card with art and its later steps and text as nothing. When the turn ends
+// every row is drawn whole again. The desktop gives the spinner a one-line slot, so the card lives in a tool row.
+const LONG_AFTER_MS = 3000
+const BASELINE_MS = 1500
+const ART_PX = 440
+// The card always stands this tall, whatever the pane's width: a narrow pane crops the scene's sides (most fade out
+// there) instead of shrinking it. Taller and it would scroll inside its own row.
+const ART_H = 420
+
+// One module serves every open chat, so everything about a running turn is kept per chat, keyed by its session id.
+type Chat = {
+  // textless on or off in this chat pane only; kept per chat in the store, on unless switched off there.
+  on: boolean
+  // A turn is running, whether or not the card is on; `working` is that and the card being on.
+  running: boolean
+  working: boolean
+  long: boolean
+  // The prompt that started this turn, and whether the card hangs under it: only when no earlier message reads the
+  // same, since a row is known by its text alone. Otherwise the card waits for the turn's first step.
+  prompt: string
+  underPrompt: boolean
+  // This turn's own text blocks, and the answer and length the turn ended with: what the done line keeps folded.
+  turnTexts: Set<string>
+  lastText: string
+  // Answers a Stop hook sent back for more work: the turn goes on, but each was an answer the person has to see.
+  kept: string[]
+  // Until then, a row drawn that is not running is taken as already in the chat: right after a reload the mod has
+  // seen none of the chat's rows, and the redraw that shows the card would otherwise take them all as this turn's.
+  baselineUntil: number
+  answer: string
+  durationMs: number
+  // Subagents still working for this chat: a turn whose agents run in the background ends before they do.
+  agents: Set<string>
+  // The main turn ended while agents still ran; the card goes when the last one is done.
+  mainDone: boolean
+  // The turn ended without an answer: stopped by the person, an API error or a refusal.
+  stopped: boolean
+  // When the card first showed this turn, the zero of its animation.
+  longAt: number
+  turns: number
+  // Messages the person sent in this chat, and the one that last carried the note on questions.
+  prompts: number
+  hintedAt: number | null
+  startedAt: number
+  // Steps that ran during this turn, oldest first; only these can carry the card. Rows of earlier turns are redrawn
+  // by the same invalidate, and they never ran in this turn, so they draw as usual.
+  steps: string[]
+  // The step whose row holds the card: the turn's first, then the newest whenever the card scrolls out of view.
+  cardKey: string
+  timer: { cancel: () => void } | null
+  ticker: { cancel: () => void } | null
+}
+const chats = new Map<string, Chat>()
+// Off for every chat when the person turns it off with the icon or /textless; kept in the mod's store.
+let registered = false
+// Text blocks drawn while no turn ran: earlier replies, which stay visible. Any other text block is this turn's, and is
+// hidden once the card shows, so only the finished reply is read.
+const oldTexts = new Set<string>()
+// The person's messages already in the chat, for telling the turn's own prompt apart from an earlier one.
+const oldPrompts = new Set<string>()
+// Steps already in the chat when no turn ran; any other step is this turn's, running or already done (a quick read
+// can finish before it is ever drawn running).
+const oldTools = new Set<string>()
+// Finished turns stay folded: their steps and in-between text are kept hidden, and a line under the prompt says how
+// many steps and how long, with a button that opens them. Kept for this session; older turns are left as they are.
+// first: the step whose row draws the done line when there is no answer to hang the done card under.
+// stopped: the turn did not end on an answer (the person stopped it, an API error, a refusal).
+type Done = { first: string; steps: number; ms: number; open: boolean; answer: string; scene: number; stopped: boolean; labels: string[] }
+const done: Done[] = []
+// A finished turn's answer text, to its entry in done: the done card hangs under that block.
+const doneAnswers = new Map<string, number>()
+// What each step did, in a few words, by its tool_use_id: "show steps" lists these inside the done card, because the
+// app does not reliably redraw the old step rows when asked.
+const stepLabels = new Map<string, string>()
+function stepLabel(tool: string, input: any) {
+  const i = input && typeof input === 'object' ? input : {}
+  // A path shows its last two parts: the file and its folder, not a drive prefix that hides the name.
+  const file = i.file_path ?? i.path
+  const short = typeof file === 'string' ? file.split(/[\\/]+/).filter(Boolean).slice(-2).join('/') : undefined
+  const what = i.description ?? i.command ?? short ?? i.pattern ?? i.url ?? i.query ?? i.prompt ?? ''
+  const one = String(what).replace(/\s+/g, ' ').trim()
+  return one ? `${tool}  ${one.length > 80 ? one.slice(0, 79) + '…' : one}` : tool
+}
+const foldedTools = new Map<string, number>()
+const foldedTexts = new Map<string, number>()
+
+// The person's own scenes: any GIF, PNG, WebP, JPG or SVG dropped in ~/.claude/textless/scenes joins the
+// rotation. A picture is wrapped in an SVG as a data URI, so it has to fit the engine's 131072-character cap.
+const SVG_CAP = 131072
+const IMAGE_TYPES: Record<string, string> = { gif: 'image/gif', png: 'image/png', webp: 'image/webp', jpg: 'image/jpeg', jpeg: 'image/jpeg' }
+type Own = { name: string; mtimeMs: number; svg: string }
+let own: Own[] = []
+// The drawn scenes the mod ships, read once. Files straight in hooks/scenes are the Clawd set; each folder in it is
+// another set, named after the folder (hooks/scenes/abstract is the Abstract set).
+type Scene = { name: string; svg: string; set: string; file?: string }
+let builtIn: Scene[] | null = null
+const CLAWD_SET = 'clawd'
+// The set the card rotates through, for every chat. The person's own scenes are their own set, 'yours'.
+let set = CLAWD_SET
+// The scene the person picked with the next button, by place in the list; null rotates one per turn.
+let pick: number | null = null
+// The person's own sets, made on the settings page: a name and scenes from any set, each "<set>/<scene>".
+type Mix = { id: string; name: string; scenes: string[] }
+let mixes: Mix[] = []
+function keptMixes(raw: unknown): Mix[] {
+  if (!Array.isArray(raw)) return []
+  return raw.filter((m: any) => m && typeof m.id === 'string' && /^mix-[a-z0-9]{1,24}$/.test(m.id) && typeof m.name === 'string' && Array.isArray(m.scenes))
+    .map((m: any) => ({ id: m.id, name: String(m.name).slice(0, 32), scenes: m.scenes.map(String).slice(0, 60) }))
+}
+
+async function loadBuiltIn($: any) {
+  if (builtIn) return
+  const root = `${$.plugin.root}/hooks/scenes`
+  const top = ((await $.fs.list(root).catch(() => [])) as { name: string; kind: string }[])
+  const folders = [{ dir: root, set: CLAWD_SET }, ...top.filter(f => f.kind === 'dir').map(f => ({ dir: `${root}/${f.name}`, set: f.name }))]
+  const found: Scene[] = []
+  for (const { dir, set: name } of folders) {
+    const files = ((await $.fs.list(dir).catch(() => [])) as { name: string; kind: string }[])
+      .filter(f => f.kind === 'file' && f.name.endsWith('.svg'))
+      .sort((a, b) => a.name.localeCompare(b.name))
+    const read = await Promise.all(files.map(f => $.fs.read(`${dir}/${f.name}`).catch(() => '')))
+    files.forEach((f, i) => found.push({ name: f.name.replace(/\.svg$/, ''), svg: String(read[i]), set: name }))
+  }
+  builtIn = found.filter(b => b.svg.includes('<svg') && b.svg.length <= SVG_CAP)
+  // The quotes set is drawn, not read: each quote's card is made the first time something asks for it, then kept.
+  for (const [id, text, author] of QUOTES) {
+    let made: string | null = null
+    builtIn.push({ name: id, set: 'quotes', get svg() { return (made ??= quoteCard(text, author)) } })
+  }
+}
+
+// When each play-once scene (a quote being written) was first on the card, by set and name. Once it has had its full
+// time it is shown finished from then on, so a redraw or a later turn never writes it again.
+const firstShown = new Map<string, number>()
+
+// The on/off switch in the model strip: a pill in Clawd's orange with the knob right when on, grey with the knob left
+// when off. The knob carries a small T, struck through while the text is hidden.
+function switchSvg(on: boolean) {
+  const pill = on ? '<rect x=".5" y=".5" width="29" height="15" rx="7.5" fill="#d77757" stroke="#d77757"/>' : '<rect x=".5" y=".5" width="29" height="15" rx="7.5" fill="#2c2c31" stroke="#4a4a52"/>'
+  const kx = on ? 22 : 8
+  const ink = on ? '#d77757' : '#2c2c31'
+  const t = `<rect x="${kx - 2.5}" y="4.5" width="5" height="1.4" fill="${ink}"/><rect x="${kx - 0.7}" y="4.5" width="1.4" height="7" fill="${ink}"/>`
+  const strike = on ? `<rect x="${kx - 4}" y="7.3" width="8" height="1.3" fill="${ink}" transform="rotate(-35 ${kx} 8)"/>` : ''
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="16" viewBox="0 0 30 16">${pill}<circle cx="${kx}" cy="8" r="6" fill="${on ? '#ffffff' : '#8b8b93'}"/>${t}${strike}</svg>`
+}
+const tooBig = new Set<string>()
+
+async function scenesDir($: any) {
+  const home = String((await $.env.get('USERPROFILE').catch(() => '')) || (await $.env.get('HOME').catch(() => '')) || '')
+  const sep = home.includes('\\') ? '\\' : '/'
+  return [home, '.claude', 'textless', 'scenes'].join(sep)
+}
+
+function wrapImage(mime: string, base64: string, width = ART_PX, height = ART_PX) {
+  // Drawn at the card's size, kept in proportion, with hard pixel edges so pixel art stays crisp when scaled.
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><image href="data:${mime};base64,${base64}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid meet" style="image-rendering:pixelated"/></svg>`
+}
+
+// Reads the folder again, reusing files that did not change. A file too big for the card is skipped and named once.
+async function loadOwn($: any) {
+  const dir = await scenesDir($)
+  const entries = ((await $.fs.list(dir).catch(() => [])) as { name: string; kind: string; mtimeMs: number }[])
+    .filter(f => f.kind === 'file')
+    .sort((a, b) => a.name.localeCompare(b.name))
+  const next: Own[] = []
+  for (const f of entries) {
+    const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
+    if (ext !== 'svg' && !IMAGE_TYPES[ext]) continue
+    const kept = own.find(o => o.name === f.name && o.mtimeMs === f.mtimeMs)
+    if (kept) {
+      next.push(kept)
+      continue
+    }
+    const path = `${dir}/${f.name}`
+    const svg = ext === 'svg'
+      ? String(await $.fs.read(path).catch(() => ''))
+      : wrapImage(IMAGE_TYPES[ext], String(((await $.fs.read(path, { as: 'bytes' }).catch(() => null)) as { base64?: string } | null)?.base64 ?? ''))
+    if (!svg || svg.length > SVG_CAP || !svg.includes('<svg')) {
+      if (!tooBig.has(f.name)) {
+        tooBig.add(f.name)
+        void Promise.resolve().then(() => $.ui.toast(`textless: ${f.name} is too big or not a picture (keep it under about 95 KB)`)).catch(() => undefined)
+      }
+      continue
+    }
+    next.push({ name: f.name, mtimeMs: f.mtimeMs, svg })
+  }
+  own = next
+}
+
+async function openFolder($: any) {
+  const dir = await scenesDir($)
+  await $.fs.write(`${dir}/README.txt`, 'Drop GIF, PNG, WebP, JPG or SVG files here (under about 95 KB each). They show in the textless card while Claude works.\n').catch(() => undefined)
+  // Explorer answers 1 even when it opens the window, so any answer counts; only a refusal to start moves on to the
+  // next way. If none starts, the person is told, and the panel's Copy path still gets them there.
+  const ways = dir.includes('\\')
+    ? [['explorer.exe', dir], ['cmd', '/c', 'start', '""', dir]]
+    : [['open', dir], ['xdg-open', dir]]
+  for (const argv of ways) {
+    const started = await $.process.run(argv, { timeoutMs: 5000 }).then(() => true, () => false)
+    if (started) return dir
+  }
+  void Promise.resolve().then(() => $.ui.toast(`textless: could not open the folder. It is at ${dir}`)).catch(() => undefined)
+  return dir
+}
+
+// The scene market (market/ in this repo): community scenes, one click to use. TEXTLESS_MARKET_API and
+// TEXTLESS_MARKET_SITE point the plugin elsewhere, such as the local dev Worker (http://127.0.0.1:8788).
+const MARKET_API = 'https://textless-market.isac-ehrstedt.workers.dev'
+const MARKET_SITE = 'https://textless-preview.isac-ehrstedt.workers.dev/market/'
+type Listed = { id: string; name: string; author: string; link?: string; description?: string; width: number; height: number; created: string; file: string; stars?: number }
+// Ids name the saved file, so only plain ones are taken: never a name or path the server sends.
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/
+type Market = { scenes: Listed[]; error: string; loading: boolean; at: number }
+let market: Market = { scenes: [], error: '', loading: false, at: 0 }
+// Thumbnails for the Community tab, checked like a download before they are drawn; '' marks one that failed.
+const thumbs = new Map<string, string>()
+// The market names of saved scenes, by id, so the scene list says "Rain cloud" and not the id.
+let marketNames: Record<string, { name: string; author: string }> = {}
+let paneTab: 'settings' | 'community' = 'settings'
+
+async function marketUrls($: any) {
+  const api = String((await $.env.get('TEXTLESS_MARKET_API').catch(() => '')) || MARKET_API).replace(/\/+$/, '')
+  const site = String((await $.env.get('TEXTLESS_MARKET_SITE').catch(() => '')) || MARKET_SITE)
+  return { api, site }
+}
+
+async function listMarket($: any): Promise<Listed[]> {
+  const { api } = await marketUrls($)
+  const res = await $.http.fetch(`${api}/scenes`)
+  if (!res.ok) throw new Error(`the market answered ${res.status}`)
+  const data = JSON.parse(res.text)
+  // Most starred first; the market already lists newest first, and sort keeps that order among equal stars.
+  return (Array.isArray(data?.scenes) ? data.scenes : [])
+    .filter((s: any) => typeof s?.id === 'string' && SAFE_ID.test(s.id))
+    .sort((a: any, b: any) => (Number(b.stars) || 0) - (Number(a.stars) || 0))
+}
+
+function bytesOf(base64: string) {
+  const bin = atob(base64)
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
+}
+
+// Downloads one listed scene and runs the market's own checks on it again. Returns it as the SVG the card draws: an
+// SVG as it is, a picture wrapped as a data URI (the plugin can only write text). Throws with the reason to tell.
+async function downloadScene($: any, s: Listed) {
+  const { api } = await marketUrls($)
+  const ext = String(s.file ?? '').split(/[?#]/)[0].split('.').pop()?.toLowerCase() ?? ''
+  if (ext !== 'svg' && !IMAGE_TYPES[ext]) throw new Error('it is not a picture the card can show')
+  // Fetched from the market's own file route by id, whatever address the listing gives.
+  const url = `${api}/f/${s.id}.${ext}`
+  let svg: string
+  if (ext === 'svg') {
+    const res = await $.http.fetch(url)
+    if (!res.ok) throw new Error(`the market answered ${res.status}`)
+    const verdict = checkFile(`${s.id}.svg`, new TextEncoder().encode(res.text))
+    if (verdict.problems.length) throw new Error(verdict.problems.join('; '))
+    svg = res.text
+  } else {
+    const res = await $.http.fetch(`${url}?as=base64`)
+    if (!res.ok) throw new Error(`the market answered ${res.status}`)
+    const base64 = res.text.replace(/\s+/g, '')
+    if (!/^[A-Za-z0-9+/]+=*$/.test(base64)) throw new Error('the market sent something that is not a picture')
+    const verdict = checkFile(`${s.id}.${ext}`, bytesOf(base64))
+    if (verdict.problems.length) throw new Error(verdict.problems.join('; '))
+    svg = wrapImage(IMAGE_TYPES[ext], base64, verdict.width, verdict.height)
+  }
+  if (svg.length > SVG_CAP) throw new Error('it is too big for the card (pictures have to stay under about 95 KB)')
+  return svg
+}
+
+// Saves a listed scene as ~/.claude/textless/scenes/<id>.svg and makes it the scene every chat shows.
+async function useScene($: any, s: Listed) {
+  const svg = await downloadScene($, s)
+  const dir = await scenesDir($)
+  await $.fs.write(`${dir}/${s.id}.svg`, svg)
+  marketNames = { ...marketNames, [s.id]: { name: String(s.name).slice(0, 40), author: String(s.author).slice(0, 40) } }
+  await $.store.set('marketNames', marketNames).catch(() => undefined)
+  await loadOwn($)
+  await loadBuiltIn($)
+  await setSet($, 'yours')
+  await setPick($, Math.max(0, sceneList().findIndex(sc => sc.file === `${s.id}.svg`)))
+  return `${s.name} by ${s.author} is on. It plays the next time Claude works.`
+}
+
+async function getScene($: any, id: string) {
+  if (!SAFE_ID.test(id)) return `"${id}" is not a scene id. The site's Use in textless button copies the right command.`
+  let scenes: Listed[]
+  try {
+    scenes = await listMarket($)
+  } catch {
+    return 'The scene market could not be reached. Your scenes keep working; try again later.'
+  }
+  const s = scenes.find(x => x.id === id)
+  if (!s) return `No scene ${id} in the market. It was not found or was taken down.`
+  try {
+    return await useScene($, s)
+  } catch (err) {
+    return `${s.name} was not added: ${String((err as any)?.message ?? err)}.`
+  }
+}
+
+// Fills the Community tab: the listing, then each thumbnail as it arrives. Kept for a minute between opens.
+async function refreshMarket($: any, force = false) {
+  if (market.loading || (!force && market.at && Date.now() - market.at < 60000)) return
+  market = { ...market, loading: true }
+  $.ui.invalidate('ui.render')
+  try {
+    market = { scenes: await listMarket($), error: '', loading: false, at: Date.now() }
+  } catch {
+    market = { ...market, error: 'The scene market could not be reached. Your scenes keep working.', loading: false, at: Date.now() }
+  }
+  $.ui.invalidate('ui.render')
+  for (const s of market.scenes.slice(0, 24)) {
+    if (thumbs.has(s.id)) continue
+    thumbs.set(s.id, await downloadScene($, s).catch(() => ''))
+    $.ui.invalidate('ui.render')
+  }
+}
+
+async function useFromPane($: any, s: Listed) {
+  const said = await useScene($, s).catch(err => `${s.name} was not added: ${String((err as any)?.message ?? err)}.`)
+  void Promise.resolve().then(() => $.ui.toast(`textless: ${said}`)).catch(() => undefined)
+  $.ui.invalidate('ui.render')
+}
+
+async function chatOf($: any): Promise<Chat> {
+  const id = String(await $.session.id().catch(() => ''))
+  let chat = chats.get(id)
+  if (!chat) {
+    chat = { on: true, running: false, working: false, long: false, prompt: '', underPrompt: false, turnTexts: new Set<string>(), lastText: '', kept: [], baselineUntil: 0, answer: '', durationMs: 0, longAt: 0, agents: new Set<string>(), mainDone: false, stopped: false, turns: 0, prompts: 0, hintedAt: null, startedAt: 0, steps: [], cardKey: '', timer: null, ticker: null }
+    chats.set(id, chat)
+    chat.on = (await $.store.get(`on:${id}`).catch(() => null)) !== false
+  }
+  return chat
+}
+
+// Debug log: what the mod did and when, one file per chat as ~/.claude/textless/debug-<chat>.log, the last 300 lines.
+// One file per chat because every chat keeps its own buffer and would overwrite the others.
+const logLines: string[] = []
+// Off unless switched on with /textless debug (kept in the store, every pane) or TEXTLESS_DEBUG=1; then it writes the
+// log below.
+let debugOn: boolean | null = null
+function dbg($: any, line: string) {
+  if (debugOn === null) {
+    debugOn = false
+    void Promise.all([$.store.get('debug').catch(() => null), Promise.resolve($.env.get('TEXTLESS_DEBUG')).catch(() => '')])
+      .then(([kept, env]: any[]) => { debugOn = kept === true || String(env ?? '') === '1' })
+      .catch(() => undefined)
+  }
+  if (!debugOn) return
+  logLines.push(`${new Date().toISOString().slice(11, 23)} ${line}`)
+  if (logLines.length > 300) logLines.shift()
+  void Promise.all([scenesDir($), $.session.id().catch(() => 'unknown')])
+    .then(([dir, id]) => $.fs.write(dir.replace(/scenes$/, `debug-${String(id).slice(0, 8)}.log`), logLines.join('\n')))
+    .catch(() => undefined)
+}
+
+function goLong($: any, chat: Chat) {
+  dbg($, `goLong working=${chat.working} long=${chat.long} steps=${chat.steps.length}`)
+  if (!chat.working || chat.long) return
+  chat.long = true
+  chat.longAt = Date.now()
+  // No redraw on a clock: every redraw of an image starts its animation over, which reads as a stutter.
+  $.ui.invalidate('ui.render')
+}
+
+// Marks a step as part of this turn when the app reports it running, and says where it stands in the turn.
+function track($: any, chat: Chat, key: string, isRunning: boolean) {
+  if (!key) return 'other'
+  if ((isRunning || !oldTools.has(key)) && !chat.steps.includes(key)) {
+    chat.steps.push(key)
+    dbg($, `step ${chat.steps.length} ${key.slice(-8)} running=${isRunning}`)
+    goLong($, chat)
+    // A new step may be the one that puts the card far enough up to move it down.
+    if (chat.long && chat.cardKey) reanchor($, chat, undefined)
+  }
+  if (!chat.steps.includes(key)) return 'other'
+  // The card stays in the turn's first step: the app does not redraw rows it already drew, so a card moved to the
+  // newest step left its old copy behind (two cards) and rebuilt itself every step (flicker).
+  if (!chat.cardKey) chat.cardKey = chat.steps[0] ?? ''
+  return key === chat.cardKey ? 'card' : 'later'
+}
+
+// The rows hidden under the card still take the app's spacing, and its own "Ran 3 commands" lines come in below, so
+// a long turn pushes the card up and out of view. Where the app says which rows the viewport shows, the card moves
+// once more than half of its row has scrolled away. The desktop does not say (onScreen stays undefined), so there it
+// moves once REANCHOR_STEPS steps have come in below it, about when it starts to leave the screen. It moves to the
+// newest step's row, at the bottom; the old row redraws to nothing.
+const REANCHOR_STEPS = 3
+function reanchor($: any, chat: Chat, onScreen: any) {
+  const newest = chat.steps[chat.steps.length - 1]
+  if (!newest || newest === chat.cardKey) return false
+  const below = chat.steps.length - 1 - chat.steps.indexOf(chat.cardKey)
+  const away = onScreen === undefined
+    ? below >= REANCHOR_STEPS
+    : onScreen === null || (typeof onScreen?.first === 'number' && typeof onScreen?.of === 'number' && onScreen.first > onScreen.of / 2)
+  if (!away) return false
+  dbg($, `card moves down ${chat.cardKey.slice(-8)} -> ${newest.slice(-8)} below=${below} onScreen=${JSON.stringify(onScreen)}`)
+  chat.cardKey = newest
+  void Promise.resolve().then(() => $.ui.invalidate('ui.render'))
+  return true
+}
+
+const clock = (ms: number) => {
+  const s = Math.max(0, Math.round(ms / 1000))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+// Every scene there is, by set: the person's own as 'yours', then the shipped ones (the old drawn-in-code ones only
+// if those cannot be read).
+function allScenes(): Scene[] {
+  // The drawn quotes are always there; the old drawn-in-code scenes stand in only when no scene file could be read.
+  const files = (builtIn ?? []).filter(b => b.set !== 'quotes')
+  const shipped = files.length > 0 ? (builtIn as Scene[]) : [...SCENES.map((svg, i) => ({ name: `scene ${i + 1}`, svg, set: CLAWD_SET })), ...(builtIn ?? [])]
+  const label = (file: string) => marketNames[file.replace(/\.svg$/, '')]?.name ?? file.replace(/\.[^.]+$/, '')
+  const base = [...own.map(o => ({ name: label(o.name), svg: o.svg, set: 'yours', file: o.name })), ...shipped]
+  // Each of the person's sets holds the scenes it names that this computer has, in the order they were ticked.
+  const made = mixes.flatMap(m => m.scenes.flatMap(ref => base.filter(b => `${b.set}/${b.name}` === ref).slice(0, 1).map(b => ({ ...b, set: m.id }))))
+  return [...base, ...made]
+}
+
+// The sets there are, the Clawd set first, the person's own last.
+function setList() {
+  const names = [...new Set(allScenes().map(s => s.set))]
+  // Clawd first, then the shipped sets, the person's own folder, and the sets they made last.
+  const rank = (n: string) => (n === CLAWD_SET ? 0 : n.startsWith('mix-') ? 3 : n === 'yours' ? 2 : 1)
+  return names.sort((a, b) => rank(a) - rank(b) || (a.startsWith('mix-') ? 0 : a.localeCompare(b)))
+}
+
+const setLabel = (name: string) => (name === 'yours' ? 'Your own' : mixes.find(m => m.id === name)?.name ?? name[0].toUpperCase() + name.slice(1))
+
+// The scenes the card rotates through: the chosen set, or the Clawd set if that one is gone.
+function sceneList() {
+  const all = allScenes()
+  const inSet = all.filter(s => s.set === set)
+  return inSet.length > 0 ? inSet : all.filter(s => s.set === CLAWD_SET).length > 0 ? all.filter(s => s.set === CLAWD_SET) : all
+}
+
+function sceneIndex(chat: Chat) {
+  const n = sceneList().length
+  return pick !== null ? pick % n : (Math.max(1, chat.turns) - 1) % n
+}
+
+// SMIL's own clock: each animation begins that many seconds in the past. One that names its own begin keeps it.
+function inPhase(svg: string, elapsedMs: number) {
+  const ago = `-${(Math.max(0, elapsedMs) / 1000).toFixed(2)}s`
+  return svg.replace(/<(animate\w*|set)([^>]*?)(\/?)>/g, (tag, name, attrs, close) => (attrs.includes('begin=') ? tag : `<${name} begin="${ago}"${attrs}${close}>`))
+}
+
+async function card($: any, e: any, chat: Chat, step: string) {
+  try {
+    const out = await drawCard($, e, chat, step)
+    dbg($, `card drawn scenes=${sceneList().length} svg=${Boolean(($.ui.resolve(e) as any).Svg)}`)
+    return out
+  } catch (err) {
+    dbg($, `card FAILED ${String((err as any)?.stack ?? err).slice(0, 300)}`)
+    const { Text } = $.ui.resolve(e) as Record<string, any>
+    return <Text color="#d97757">Claude is working</Text>
+  }
+}
+
+async function drawCard($: any, e: any, chat: Chat, step: string) {
+  const { Box, Text, Svg } = $.ui.resolve(e) as Record<string, any>
+  // Every redraw starts the image's animation over; starting each one as far in as the card has been showing makes
+  // the restart land where the last drawing was, so it cannot be seen.
+  const scene = sceneList()[sceneIndex(chat)]
+  const now = await $.clock.now()
+  let src = scene.svg
+  const once = onceMs(src)
+  if (once !== null) {
+    const key = `${scene.set}/${scene.name}`
+    const first = firstShown.get(key) ?? now
+    firstShown.set(key, first)
+    if (now - first >= once) src = stillCard(src)
+  }
+  const art = inPhase(src, now - chat.longAt)
+  // A scene from the marketplace names who drew it, under the card's words. Shipped scenes and the person's own don't.
+  const maker = scene.file ? marketNames[scene.file.replace(/\.svg$/, '')] : undefined
+  // Square art with the words under it. Nothing here changes on a clock, so the drawing is only redrawn when a step
+  // changes and its animation runs on undisturbed.
+  // Each scene keeps its own shape: drawn at its own width and height, no wider than the card allows.
+  const size = art.match(/<svg[^>]*\swidth="(\d+)"[^>]*\sheight="(\d+)"/)
+  const artW = size ? Number(size[1]) : ART_PX
+  const artH = size ? Number(size[2]) : ART_PX
+  const fitW = Math.round((ART_H * artW) / artH)
+  // Fill the box and crop what does not fit, centred, so a pane narrower than fitW keeps the full height. A scene whose
+  // root says data-fit="contain" (a word that must stay whole) is fitted inside instead; it paints its own background
+  // past its viewBox so the box still looks full.
+  const contain = /<svg\b[^>]*\sdata-fit="contain"/.test(art)
+  const fit = contain ? 'xMidYMid meet' : 'xMidYMid slice'
+  const cover = art.replace(/<svg\b([^>]*?)\s*preserveAspectRatio="[^"]*"/, '<svg$1').replace(/<svg\b/, `<svg preserveAspectRatio="${fit}"`)
+  return (
+    <Box key="textless" flexDirection="column" alignItems="center" paddingY={1}>
+      {Svg ? <Svg source={cover} alt="Claude working" width={fitW} height={ART_H} /> : null}
+      {/* Answered while a background task runs: Claude still has work under way, so it is not the person's turn yet. */}
+      <Text color="#d97757" bold wrap="truncate">Claude is working</Text>
+      <Text dimColor wrap="truncate">{chat.mainDone ? 'Waiting for a background task' : step}</Text>
+      {maker ? <Text key="textless-credit" color="#6e6660" wrap="truncate">{`${maker.name} · by ${maker.author}`}</Text> : null}
+    </Box>
+  )
+}
+
+async function openSettings($: any) {
+  await loadOwn($)
+  await loadBuiltIn($)
+  await $.ui.open({ id: 'textless-settings', title: 'textless' })
+}
+
+// The settings page on the website. This computer gets a random key the first time; the page saves under it on the
+// market Worker and every chat reads it back from there, so nothing has to be pasted.
+// Questions, links and the next step under a finished answer; /textless summary off leaves only the done line.
+let summaryOn = true
+let syncKey = ''
+let remoteUpdated = 0
+let watchUntil = 0
+let lastPull = 0
+
+async function keyOf($: any) {
+  if (syncKey) return syncKey
+  const kept = await $.store.get('syncKey').catch(() => null)
+  if (typeof kept === 'string' && /^[0-9a-f]{32}$/.test(kept)) return (syncKey = kept)
+  const bytes = globalThis.crypto?.getRandomValues ? globalThis.crypto.getRandomValues(new Uint8Array(16)) : Uint8Array.from({ length: 16 }, () => Math.floor(Math.random() * 256))
+  syncKey = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+  await $.store.set('syncKey', syncKey).catch(() => undefined)
+  return syncKey
+}
+
+// The page opens on what the card shows now: the set, and the picked scene's name if one is kept.
+async function openWebSettings($: any) {
+  await loadOwn($)
+  await loadBuiltIn($)
+  const { site } = await marketUrls($)
+  const scene = pick !== null ? sceneList()[pick % sceneList().length]?.name ?? '' : ''
+  const page = new URL('../settings/', site).href
+  const hash = `k=${await keyOf($)}&set=${encodeURIComponent(set)}&scene=${encodeURIComponent(scene)}&summary=${summaryOn ? 1 : 0}`
+  let url = `${page}#${hash}`
+  // The page cannot read this computer, so the plugin writes a copy of it here with the person's own scenes in it
+  // and opens that: their pictures never leave the computer, only the pick is saved (as from the site). Offline, or
+  // with no own scenes, the site itself opens.
+  const mine = allScenes().filter(s => s.set === 'yours')
+  // Written even with no own scenes yet, so the page can show where the folder is.
+  {
+    const res = await $.http.fetch(page).catch(() => null)
+    if (res?.ok && String(res.text).includes('var API')) {
+      const ownList = mine.slice(0, 60).map(s => ({ id: s.name, name: s.name, src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(s.svg)}` }))
+      const folder = await scenesDir($)
+      const data = `<script>window.TEXTLESS_HASH=${JSON.stringify(hash)};window.TEXTLESS_DIR=${JSON.stringify(folder)};window.TEXTLESS_OWN=${JSON.stringify(ownList).replace(/</g, '\\u003c')};</script>`
+      const html = String(res.text).replace('<head>', `<head><base href="${page}">`).replace('<script>\nvar API', `${data}\n<script>\nvar API`)
+      const dir = (await scenesDir($)).replace(/[\\/]scenes$/, '')
+      const file = `${dir}${dir.includes('\\') ? '\\' : '/'}settings.html`
+      if (await $.fs.write(file, html).then(() => true, () => false)) url = file
+    }
+  }
+  // Watch closely for a while: the person is on the page and expects a save to show at once.
+  watchUntil = Number(await $.clock.now()) + 20 * 60_000
+  const windows = (await $.env.get('USERPROFILE').catch(() => '')) !== ''
+  // rundll32 hands the address to the default browser and answers 0; explorer answers 1 even when it opens one.
+  const ways = windows ? [['rundll32', 'url.dll,FileProtocolHandler', url], ['explorer.exe', url]] : [['open', url], ['xdg-open', url]]
+  for (const argv of ways) {
+    const r = await $.process.run(argv, { timeoutMs: 5000 }).then((x: any) => x, (err: any) => ({ exitCode: -1, stderr: String(err) }))
+    dbg($, `settings open ${argv[0]} exit=${r.exitCode} ${String(r.stderr ?? '').slice(0, 120)}`)
+    if (r.exitCode !== -1) return
+  }
+  // No browser would start: the settings in the app still work.
+  await openSettings($)
+}
+
+// What the page saved, if it is newer than what this chat last took. Every 5 s while the page was just opened, every
+// minute otherwise, and never before the page was first opened on this computer.
+async function pullSettings($: any) {
+  if (!syncKey) {
+    const kept = await $.store.get('syncKey').catch(() => null)
+    if (typeof kept !== 'string' || !/^[0-9a-f]{32}$/.test(kept)) return
+    syncKey = kept
+  }
+  const now = Number(await $.clock.now())
+  if (lastPull && now - lastPull < (now < watchUntil ? 5000 : 60_000)) return
+  lastPull = now || 1
+  const { api } = await marketUrls($)
+  const res = await $.http.fetch(`${api}/settings/${syncKey}`).catch(() => null)
+  if (!res?.ok) return
+  let got: any = null
+  try { got = JSON.parse(String(res.text)) } catch { return }
+  if (!got || typeof got.set !== 'string' || typeof got.updated !== 'number') return
+  const taken = Number(await $.store.get('remoteUpdated').catch(() => 0)) || 0
+  remoteUpdated = Math.max(remoteUpdated, taken)
+  if (got.updated <= remoteUpdated) return
+  remoteUpdated = got.updated
+  await $.store.set('remoteUpdated', got.updated).catch(() => undefined)
+  await loadOwn($)
+  await loadBuiltIn($)
+  // The questions list under answers, on or off for every chat, when the page sent it.
+  if (typeof got.summary === 'boolean' && got.summary !== summaryOn) {
+    summaryOn = got.summary
+    await $.store.set('summary', summaryOn).catch(() => undefined)
+  }
+  if (Array.isArray(got.mixes)) {
+    mixes = keptMixes(got.mixes)
+    await $.store.set('mixes', mixes).catch(() => undefined)
+  }
+  if (!setList().includes(got.set)) return
+  set = got.set
+  const at = typeof got.scene === 'string' ? sceneList().findIndex(s => s.name === got.scene) : -1
+  pick = at >= 0 ? at : null
+  await $.store.set('set', set).catch(() => undefined)
+  await $.store.set('pick', pick).catch(() => undefined)
+  $.ui.invalidate('ui.render')
+}
+
+// A scene picked in the settings, for every chat; null takes one per turn in turn.
+async function setPick($: any, value: number | null) {
+  pick = value
+  await $.store.set('pick', value).catch(() => undefined)
+  $.ui.invalidate('ui.render')
+}
+
+// A set picked in the settings, for every chat; the card then rotates through that set from its first scene.
+async function setSet($: any, name: string) {
+  set = name
+  pick = null
+  await $.store.set('set', name).catch(() => undefined)
+  await $.store.set('pick', null).catch(() => undefined)
+  $.ui.invalidate('ui.render')
+}
+
+// The next button: the scene after the one showing, kept for every chat until pressed again.
+async function nextScene($: any) {
+  const chat = await chatOf($)
+  await loadOwn($)
+  await loadBuiltIn($)
+  const list = sceneList()
+  pick = (sceneIndex(chat) + 1) % list.length
+  await $.store.set('pick', pick).catch(() => undefined)
+  void Promise.resolve().then(() => $.ui.toast(`textless: ${list[pick!].name} (${pick! + 1} of ${list.length})`)).catch(() => undefined)
+  $.ui.invalidate('ui.render')
+}
+
+// On or off for this chat pane only: other panes keep their own switch. Switched during a turn, the card goes or comes
+// at once: off draws the rows and text whole again.
+// The strip passes the chat and id it was drawn for: a press runs later, outside the drawing, and looking the chat up
+// again there could land on another one.
+async function toggle($: any, want?: boolean, drawn?: { chat: Chat; id: string }) {
+  const chat = drawn?.chat ?? (await chatOf($))
+  const id = drawn?.id ?? String(await $.session.id().catch(() => ''))
+  const was = chat.on
+  chat.on = want ?? !chat.on
+  chat.working = chat.running && chat.on
+  if (!chat.working) chat.long = false
+  else if (!was) {
+    // Back on in the middle of a turn: the rows drawn while off stay as they are (the app does not redraw them), so
+    // the card starts over at the next step, under them, instead of going back up to the turn's first step.
+    for (const k of chat.steps) oldTools.add(k)
+    chat.steps = []
+    chat.cardKey = ''
+    chat.long = false
+  } else if (chat.steps.length > 0) goLong($, chat)
+  void Promise.resolve().then(() => $.ui.toast(chat.on ? 'textless on in this chat' : 'textless off in this chat')).catch(() => undefined)
+  await $.store.set(`on:${id}`, chat.on).catch(() => undefined)
+  $.ui.invalidate('ui.render')
+}
+
+async function setUp($: any) {
+  if (registered) return
+  registered = true
+  const kept = await $.store.get('pick').catch(() => null)
+  pick = typeof kept === 'number' ? kept : null
+  const keptSet = await $.store.get('set').catch(() => null)
+  set = typeof keptSet === 'string' && keptSet ? keptSet : CLAWD_SET
+  summaryOn = (await $.store.get('summary').catch(() => null)) !== false
+  mixes = keptMixes(await $.store.get('mixes').catch(() => null))
+  const keptNames = await $.store.get('marketNames').catch(() => null)
+  marketNames = keptNames && typeof keptNames === 'object' ? keptNames : {}
+  void $.command.register({ name: 'textless', description: 'textless on or off in this chat.' }).catch(() => undefined)
+  // The scene pick and set are shared by every chat pane: one picked in a pane reaches the others through the store,
+  // read here every 2 s. On or off stays per pane.
+  $.clock.every(2000, () => { void syncSettings($).catch(() => undefined); void pullSettings($).catch(() => undefined) })
+}
+
+async function syncSettings($: any) {
+  const keptPick = await $.store.get('pick').catch(() => null)
+  const nextPick = typeof keptPick === 'number' ? keptPick : null
+  const keptSet = await $.store.get('set').catch(() => null)
+  const nextSet = typeof keptSet === 'string' && keptSet ? keptSet : CLAWD_SET
+  if (nextPick === pick && nextSet === set) return
+  const setMoved = nextSet !== set
+  pick = nextPick
+  set = nextSet
+  if (setMoved) await loadBuiltIn($)
+  $.ui.invalidate('ui.render')
+}
+
+// A hidden row takes no height: an empty Text still drew a line plus the row's gap, so hidden steps stacked up empty
+// space under the card, scrolled it out of view and left a hole above the answer.
+function blank($: any, e: any) {
+  const { Box } = $.ui.resolve(e)
+  return <Box height={0} overflow="hidden" />
+}
+
+// Background agents can outlive the turn that started them; past this the card goes even if one never reports back.
+const AGENT_WAIT_MS = 10 * 60 * 1000
+
+// A text block is part of the turn's final answer: the app draws a long answer as several blocks.
+function inAnswer(chat: Chat, text: string) {
+  const t = text.trim().replace(/\s+/g, ' ').slice(0, 200)
+  return t.length > 0 && chat.answer.replace(/\s+/g, ' ').includes(t)
+}
+
+// A text block is part of an answer a Stop hook sent back (and the shorter versions of it drawn while it streamed).
+function isKept(chat: Chat, text: string) {
+  const t = text.trim().replace(/\s+/g, ' ').slice(0, 200)
+  return t.length > 0 && chat.kept.some(k => k.includes(t))
+}
+
+// Done cards live in memory, so a reload of the plugin (an update, a restart) would drop them and the answer would
+// show bare, with its steps and in-between text back. Each chat keeps its last turns in the store and reads them
+// back the first time it draws after a reload.
+type SavedTurn = { d: Done; tools: string[]; texts: string[] }
+const SAVED_TURNS = 30
+const loadedDone = new Set<string>()
+
+async function saveDone($: any, index: number) {
+  const id = String(await $.session.id().catch(() => ''))
+  if (!id) return
+  const tools = [...foldedTools].filter(([, i]) => i === index).map(([k]) => k)
+  const texts = [...foldedTexts].filter(([, i]) => i === index).map(([k]) => k).filter(t => t.length <= 4000)
+  const kept = ((await $.store.get(`done:${id}`).catch(() => null)) as SavedTurn[] | null) ?? []
+  const turn: SavedTurn = { d: { ...done[index], open: false, labels: done[index].labels.slice(0, 40) }, tools, texts }
+  await $.store.set(`done:${id}`, [...(Array.isArray(kept) ? kept : []), turn].slice(-SAVED_TURNS)).catch(() => undefined)
+}
+
+async function loadDone($: any) {
+  const id = String(await $.session.id().catch(() => ''))
+  if (!id || loadedDone.has(id)) return
+  loadedDone.add(id)
+  const kept = (await $.store.get(`done:${id}`).catch(() => null)) as SavedTurn[] | null
+  if (!Array.isArray(kept)) return
+  for (const t of kept) {
+    if (!t?.d || (t.d.answer && doneAnswers.has(t.d.answer))) continue
+    const index = done.length
+    done.push({ ...t.d, open: false })
+    if (t.d.answer) doneAnswers.set(t.d.answer, index)
+    for (const k of t.tools ?? []) if (!foldedTools.has(k)) foldedTools.set(k, index)
+    for (const k of t.texts ?? []) if (!foldedTexts.has(k)) foldedTexts.set(k, index)
+  }
+  if (kept.length) $.ui.invalidate('ui.render')
+}
+
+function endTurn($: any, chat: Chat) {
+  dbg($, `endTurn working=${chat.working} long=${chat.long} steps=${chat.steps.length}`)
+  // A turn the card covered stays folded once it is done: only its answer shows.
+  if (chat.working && chat.long && chat.steps.length > 0) {
+    const index = done.length
+    const answer = chat.lastText.trim() ? chat.lastText : ''
+    done.push({ first: chat.steps[chat.steps.length - 1], steps: chat.steps.length, ms: chat.durationMs, open: false, answer, scene: sceneIndex(chat), stopped: chat.stopped, labels: chat.steps.map(id => stepLabels.get(id) ?? 'step') })
+    if (answer) doneAnswers.set(answer, index)
+    for (const id of chat.steps) foldedTools.set(id, index)
+    // The answer is the turn's last text block (and the shorter versions of it drawn while it streamed), and any block
+    // found in the final answer, which the app splits into several blocks when long. Only the text said along the way
+    // folds.
+    for (const t of chat.turnTexts) if (t.trim() && !chat.lastText.startsWith(t) && !inAnswer(chat, t) && !isKept(chat, t)) foldedTexts.set(t, index)
+    void saveDone($, index).catch(() => undefined)
+  }
+  chat.turnTexts = new Set<string>()
+  chat.kept = []
+  chat.lastText = ''
+  chat.running = false
+  chat.working = false
+  chat.long = false
+  chat.mainDone = false
+  chat.agents.clear()
+  chat.timer?.cancel()
+  chat.ticker?.cancel()
+  chat.timer = chat.ticker = null
+  $.ui.invalidate('ui.render')
+}
+
+// A finished turn's rows: its first step's row says what was done and opens the rest; its other rows draw nothing
+// while folded. Rows of turns textless did not cover draw as usual.
+// A finished turn with no answer to hang the card under (often a stopped one): its last step's row draws the card's
+// row itself. Its other rows draw nothing.
+async function folded($: any, e: any, next: any, ids: string[]) {
+  const at = ids.map(id => foldedTools.get(id)).find(i => i !== undefined)
+  if (at === undefined) return next(e)
+  const d = done[at]
+  if (!ids.includes(d.first) || d.answer) return blank($, e)
+  return doneRow($, e, at)
+}
+
+function isFolded(ids: string[]) {
+  return ids.some(id => {
+    const at = foldedTools.get(id)
+    return at !== undefined && !done[at].open
+  })
+}
+
+function unfold($: any, at: number) {
+  done[at].open = !done[at].open
+  $.ui.invalidate('ui.render')
+}
+
+// A 5x7 pixel font for the few words the cards say in pixels, drawn bold (each stroke doubled) with a darker drop
+// one pixel down; each pixel PIXEL_PX square. '#' is ink.
+const GLYPHS: Record<string, string[]> = {
+  D: ['####.', '#...#', '#...#', '#...#', '#...#', '#...#', '####.'],
+  O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  N: ['#...#', '##..#', '#.#.#', '#..##', '#...#', '#...#', '#...#'],
+  E: ['#####', '#....', '#....', '####.', '#....', '#....', '#####'],
+  S: ['.####', '#....', '#....', '.###.', '....#', '....#', '####.'],
+  Y: ['#...#', '#...#', '.#.#.', '..#..', '..#..', '..#..', '..#..'],
+  U: ['#...#', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
+  T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
+  P: ['####.', '#...#', '#...#', '####.', '#....', '#....', '#....'],
+  R: ['####.', '#...#', '#...#', '####.', '#.#..', '#..#.', '#...#'],
+  V: ['#...#', '#...#', '#...#', '#...#', '#...#', '.#.#.', '..#..'],
+  I: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '#####'],
+  H: ['#...#', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
+  Q: ['.###.', '#...#', '#...#', '#...#', '#.#.#', '#..#.', '.##.#'],
+  ' ': ['...', '...', '...', '...', '...', '...', '...'],
+}
+// The marks a word may start with: a 9x9 orange badge with the mark cut out, so the chat shows through.
+const BADGES: Record<string, string[]> = {
+  '✓': ['.........', '.........', '.......#.', '......##.', '.....##..', '.#..##...', '.####....', '..##.....', '.........'],
+  '?': ['.........', '...###...', '..#...#..', '......#..', '.....#...', '....#....', '.........', '....#....', '.........'],
+  // Stopped: a block sign, a ring with a slash, cut out like the others. Keyed '■' as the turn code names it.
+  '■': ['.........', '...###...', '..##..#..', '.#.#...#.', '.#..#..#.', '.#...#.#.', '..#..##..', '...###...', '.........'],
+  // Your move: a play triangle (YOUR TURN) and an arrow handing over (OVER TO YOU), cut out like the others.
+  '▶': ['.........', '..#......', '..##.....', '..###....', '..####...', '..###....', '..##.....', '..#......', '.........'],
+  '→': ['.........', '.........', '.....#...', '.....##..', '.#######.', '.....##..', '.....#...', '.........', '.........'],
+  // A thing to do: an empty checkbox, cut out like the others.
+  '☐': ['.........', '.........', '..#####..', '..#...#..', '..#...#..', '..#...#..', '..#####..', '.........', '.........'],
+}
+// One badge alone, small enough to sit on a line of text: a question or a thing to do in the list under the YOUR TURN word.
+const BADGE_PX = 2
+function badgeSvg(mark: string, color: string) {
+  const cells: string[] = []
+  BADGES[mark].forEach((row, y) => [...row].forEach((c, x) => { if (c === '.') cells.push(`<rect x="${x}" y="${y}" width="1" height="1"/>`) }))
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${9 * BADGE_PX}" height="${9 * BADGE_PX}" viewBox="0 0 9 9" shape-rendering="crispEdges"><g fill="${color}">${cells.join('')}</g></svg>`
+}
+const PIXEL_PX = 4
+const PIXEL_ROWS = 9
+const PIXEL_H = PIXEL_ROWS * PIXEL_PX
+const DROP = '#a8573c'
+// A leading mark and a space become the badge; the rest is the word.
+const splitMark = (word: string) => (BADGES[word[0]] && word[1] === ' ' ? [word[0], word.slice(2)] : ['', word])
+const pixelCols = (word: string) => {
+  const [mark, text] = splitMark(word)
+  const letters = [...text].reduce((n, c) => n + (GLYPHS[c] ?? GLYPHS[' '])[0].length + 2, -1)
+  return (mark ? 12 : 0) + letters
+}
+const pixelWidth = (word: string) => pixelCols(word) * PIXEL_PX
+function pixelWord(word: string, color: string) {
+  const [mark, text] = splitMark(word)
+  const ink: string[] = []
+  const drop: string[] = []
+  const cell = (x: number, y: number, w = 1) => `<rect x="${x}" y="${y}" width="${w}" height="1"/>`
+  if (mark) {
+    BADGES[mark].forEach((row, y) => [...row].forEach((c, x) => { if (c === '.') ink.push(cell(x, y)) }))
+  }
+  let x = mark ? 12 : 0
+  for (const c of text) {
+    const g = GLYPHS[c] ?? GLYPHS[' ']
+    g.forEach((row, y) => [...row].forEach((on, i) => {
+      if (on !== '#') return
+      drop.push(cell(x + i, y + 2, 2))
+      ink.push(cell(x + i, y + 1, 2))
+    }))
+    x += g[0].length + 2
+  }
+  const w = pixelCols(word)
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w * PIXEL_PX}" height="${PIXEL_H}" viewBox="0 0 ${w} ${PIXEL_ROWS}" shape-rendering="crispEdges"><g fill="${DROP}">${drop.join('')}</g><g fill="${color}">${ink.join('')}</g></svg>`
+}
+// The answer asks the person something: any of its lines ends in a question mark (markdown around it ignored), not
+// only the last, since a question is often followed by options and a recommendation. Code blocks don't count.
+const asks = (answer: string) =>
+  answer
+    .replace(/```[\s\S]*?```/g, '')
+    .split('\n')
+    .some(line => /\?\s*$/.test(line.replace(/[*_`)\]"”]+\s*$/, '')))
+
+// What the answer asks, short enough to read at a glance under the YOUR TURN word: each question line without its markdown,
+// cut to the sentence that asks when the line is long, and to a word boundary when even that is. At most three.
+// Handed to the model with each prompt while textless is on: the person reads the questions under the YOUR TURN word, away
+// from the rest of the answer, so each must make sense alone.
+const HINT_EVERY = 20
+const QUESTION_HINT = 'textless shows each question you ask the user on its own, apart from the rest of your answer. When you ask something, write each question so it makes sense alone: name what it is about (not \'it\' or \'det\'), keep it to one line ending in \'?\', and for a choice put a short question first and then the options written out (never only their letters), like \'Where does it turn white? At the first screen, or near the end?\'. textless numbers the items of a list that asks something (1, 2, 3, in your order) and letters the options of a choice (A, B, C, in your order), so the user may answer like \'1A, 2 slowly, 3 attached\': read the reply by those numbers and letters.'
+// Each option at most this long: a longer one wraps anyway, and a break at its "or" then reads as a broken sentence.
+const CHOICE_MAX = 80
+// A question that offers a choice, split at its "or"s (outside quotes) so each option can sit on its own line. Two
+// or three options only; anything else stays one line.
+function choices(q: string): { stem: string; options: string[] } {
+  // A heading question first ("Where does it turn white?"), when the line has one before the choice.
+  const sentences = q.split(/(?<=[?])\s+/)
+  const stem = sentences.length > 1 ? sentences.slice(0, -1).join(' ') : ''
+  const rest = sentences.length > 1 ? sentences[sentences.length - 1] : q
+  const parts: string[] = []
+  let quoted = false
+  let start = 0
+  const re = /["“”]|,?\s+(?:eller|or)\s+/gi
+  for (let m = re.exec(rest); m; m = re.exec(rest)) {
+    if (/["“”]/.test(m[0])) { quoted = !quoted; continue }
+    if (quoted) continue
+    parts.push(rest.slice(start, m.index))
+    start = m.index + m[0].length
+  }
+  parts.push(rest.slice(start))
+  // "A, B or C": the list before the last "or" is split at its commas too (not those inside brackets or quotes), but
+  // only when it reads as a list: every item short, or every item lettered by the answer itself ("A (…), B (…)").
+  // A comma inside one long option ("At the first screen, near X, or near the end") keeps it whole.
+  const clean = (t: string) => t.trim().replace(/^(?:eller|or)\s+/i, '').replace(/[\s,;?]+$/, '')
+  const label = /^([A-Z])(?:\s*[).:]\s*|\s+\(|\s*$)/
+  if (parts.length >= 2) {
+    const head = parts[0]
+    const items: string[] = []
+    let depth = 0
+    let quote = false
+    let from = 0
+    for (let i = 0; i < head.length; i++) {
+      const c = head[i]
+      if (/["“”]/.test(c)) quote = !quote
+      else if (c === '(') depth++
+      else if (c === ')') depth = Math.max(0, depth - 1)
+      else if (c === ',' && !depth && !quote) { items.push(head.slice(from, i)); from = i + 1 }
+    }
+    items.push(head.slice(from))
+    const all = [...items, ...parts.slice(1)].map(clean).filter(Boolean)
+    const short = all.every(t => t.split(/\s+/).length <= 3)
+    const lettered = all.every(t => label.test(t))
+    if (items.length > 1 && (short || lettered)) parts.splice(0, parts.length, ...all)
+  }
+  // Each option as a short line of its own: no trailing "?" or comma, a capital first letter. Options the answer
+  // lettered itself lose that letter (A, B, C are drawn anyway, in the same order) and the brackets around the rest.
+  let options = parts.map(clean).filter(Boolean)
+  if (options.length >= 2 && options.every(o => label.test(o))) {
+    options = options.map(o => o.replace(label, '').replace(/^\((.*)\)$/, '$1').replace(/\)$/, '').trim() || o)
+  }
+  options = options.map(t => t[0].toUpperCase() + t.slice(1))
+  const ok = options.length >= 2 && options.length <= 5 && options.every(o => o.length >= 1 && o.length <= CHOICE_MAX)
+  // Letters only under a heading question: without one the first option holds the question itself.
+  return ok && stem ? { stem, options } : { stem: q, options: [] }
+}
+
+// What an answer says option `letter` is, from a line that starts with it: "A: …", "A) …", "A — …", "**A** …",
+// "- A. …" or "| A | …". Markdown dropped, cut to CHOICE_MAX. Nothing when no such line is found.
+function letterOption(answer: string, letter: string) {
+  const re = new RegExp(`^\\s*(?:[-*+]\\s+|\\|\\s*)?(?:\\*\\*|__)?(?:Option\\s+|Alternativ\\s+)?${letter}(?:\\*\\*|__)?\\s*(?:[).:|—–-]|\\*\\*)\\s*(.+)$`, 'i')
+  for (const line of answer.replace(/```[\s\S]*?```/g, '').split('\n')) {
+    const m = line.match(re)
+    if (!m) continue
+    const text = m[1].replace(/\*\*|__|`|\|/g, '').replace(/\s+/g, ' ').trim()
+    if (text.length < 2) continue
+    return text.length <= CHOICE_MAX ? text : `${text.slice(0, CHOICE_MAX - 1).replace(/\s+\S*$/, '')}…`
+  }
+  return ''
+}
+
+// A finished answer is drawn again on every redraw of the chat, and reading it for questions, links and the next step
+// took about 3 ms each time; an answer never changes, so each is read once.
+function once<T>(read: (answer: string) => T): (answer: string) => T {
+  const seen = new Map<string, T>()
+  return answer => {
+    if (seen.has(answer)) return seen.get(answer) as T
+    const got = read(answer)
+    if (seen.size >= 200) seen.clear()
+    seen.set(answer, got)
+    return got
+  }
+}
+const nextStep = once(readNextStep)
+const questions = once(readQuestions)
+const withoutAsked = once(readWithoutAsked)
+const resources = once(readResources)
+
+// The next step the answer proposes, only when it says so outright: a sentence naming the next step ("Next step is…",
+// "Nästa steg är…"), or an offer whose action is spelled out ("Tell me if I should X", "Säg till om jag ska X"). An
+// offer that only points back ("…if I should try it") leaves nothing to show, and so does an answer without either.
+const NEXT_MAX = 140
+function readNextStep(answer: string): string | null {
+  const text = answer
+    .replace(/```[\s\S]*?```/g, ' ')
+    .split('\n')
+    .map(line => line.replace(/^\s*(?:#+|[-*+]|\d+[.)])\s+/, '').replace(/\*\*|__|`/g, '').trim())
+    .join(' ')
+  const sentences = text.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean)
+  const cut = (s: string) => (s.length <= NEXT_MAX ? s : `${s.slice(0, NEXT_MAX - 1).replace(/\s+\S*$/, '').replace(/[,;:\s]+$/, '')}…`)
+  const named = sentences.find(s => /\b(nästa steg|next step)\b/i.test(s) && !/\?$/.test(s))
+  if (named) return cut(named)
+  for (const s of sentences) {
+    const m = s.match(/^(?:säg till om (?:jag ska|du vill att jag)|tell me if (?:i should|you want me to)|let me know if (?:i should|you want me to))\s+(.+?)[.!]?$/i)
+    if (m && !/^\S+\s+(det|it|that|this|den)$/i.test(m[1]) && m[1].split(/\s+/).length >= 3) return cut(m[1][0].toUpperCase() + m[1].slice(1))
+  }
+  return null
+}
+
+const QUESTION_MAX = 200
+function readQuestions(answer: string) {
+  const plain = (line: string) => line
+    .replace(/^\s*(?:#+|[-*+]|\d+[.)])\s+/, '')
+    .replace(/\*\*|__|`/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[*_)\]"”]+\s*$/, '')
+    .trim()
+  const short = (q: string) => {
+    if (q.length <= QUESTION_MAX) return q
+    const parts = q.split(/(?<=[.!?:])\s+/)
+    // From the first question on: it is usually the one that says what is asked ("Where does it turn white? At the
+    // start, or near the end?"), and the sentences after it only narrow it down.
+    const first = parts.findIndex(p => /\?$/.test(p))
+    const fromFirst = first >= 0 ? parts.slice(first).join(' ') : ''
+    if (fromFirst && fromFirst.length <= QUESTION_MAX) return fromFirst
+    // Still too long: the last sentence, with the one before it when it only continues that one ("Or should I…?").
+    let at = parts.length - 1
+    while (at > 0 && /^(eller|or|och|and|men|but|annars|otherwise)\b/i.test(parts[at])) at--
+    const asked = parts.slice(at).join(' ')
+    const s = asked.length >= 12 ? asked[0].toUpperCase() + asked.slice(1) : q
+    return s.length <= QUESTION_MAX ? s : `${s.slice(0, QUESTION_MAX - 1).replace(/\s+\S*$/, '').replace(/[,;:\s]+$/, '')}…`
+  }
+  // A list that asks something is shown whole, so its other items (a screenshot to send, a step to take) come along
+  // and the numbers match the answer's own list. Outside a list, only the lines that ask.
+  const lines = answer.replace(/```[\s\S]*?```/g, '').split('\n')
+  const isItem = (line: string) => /^\s*(?:[-*+]|\d+[.)])\s+/.test(line)
+  const out: { text: string; optional: boolean; asks: boolean; raw: string }[] = []
+  const add = (line: string) => {
+    const text = plain(line)
+    if (!text) return
+    const asks = /\?$/.test(text)
+    const cut = asks ? short(text) : text.length <= QUESTION_MAX ? text : `${text.slice(0, QUESTION_MAX - 1).replace(/\s+\S*$/, '')}…`
+    out.push({ text: cut, asks, raw: line.trim(), optional: !asks && /\b(om du kan|om möjligt|valfritt|if you can|if possible|optional)\b/i.test(text) })
+  }
+  for (let i = 0; i < lines.length; i++) {
+    if (!isItem(lines[i])) {
+      if (/\?$/.test(plain(lines[i]))) add(lines[i])
+      continue
+    }
+    // One list is one kind of marker: bullets then a numbered list are two lists (options described, then the
+    // questions), so the bullets do not join the numbered questions.
+    const kind = (line: string) => (/^\s*\d+[.)]\s+/.test(line) ? 'n' : 'b')
+    const k = kind(lines[i])
+    let j = i
+    while (j < lines.length && ((isItem(lines[j]) && kind(lines[j]) === k) || (!lines[j].trim() && j + 1 < lines.length && isItem(lines[j + 1]) && kind(lines[j + 1]) === k))) j++
+    const items = lines.slice(i, j).filter(isItem)
+    if (items.some(l => /\?$/.test(plain(l)))) items.forEach(add)
+    i = j - 1
+  }
+  return out.slice(-5)
+}
+
+// The answer without the lines the list under the YOUR TURN word shows, so each question reads once, in the styled list.
+// Only those exact lines go (outside code blocks); everything else, links and code blocks included, stays.
+function readWithoutAsked(answer: string) {
+  const gone = new Set(questions(answer).map(q => q.raw))
+  if (!gone.size) return answer
+  let fenced = false
+  const kept = answer.split('\n').filter(line => {
+    if (/^\s*```/.test(line)) fenced = !fenced
+    return fenced || !gone.has(line.trim())
+  })
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+// A plain finished turn ends on a thin orange pixel line instead of a word: dithered, densest in the middle and
+// thinning out to both ends, different for every turn (seeded by its index) but the same on every redraw.
+// The plain DONE line: a small pixel tick on the left, then one clean orange line, 3 px tall, fading out to the
+// right, with a slow wave of brightness flowing along it (TIDE). The wave starts as far into its 6 s loop as the wall
+// clock is, so a redraw of the card lands where the last drawing was instead of jumping. The seed keeps ids apart.
+const TIDE_S = 6
+const LINE_COLS = 100
+const LINE_ROWS = 5
+const LINE_W = LINE_COLS * 3
+const LINE_H = LINE_ROWS * 3
+// A clean 7x5 tick, one pixel thick: a short stroke down into the corner, a long one up to the right.
+const TICK = [[6, 0], [5, 1], [0, 2], [4, 2], [1, 3], [3, 3], [2, 4]]
+function pixelLine(seed: number, nowMs: number) {
+  const ago = ((nowMs / 1000) % TIDE_S).toFixed(2)
+  const x0 = 10
+  const w = LINE_COLS - x0
+  const defs = `<defs><linearGradient id="ln${seed}" x1="0" y1="0" x2="1" y2="0">`
+    + '<stop offset="0" stop-color="#d97757"/><stop offset="0.7" stop-color="#d97757"/><stop offset="1" stop-color="#d97757" stop-opacity="0"/></linearGradient>'
+    + `<linearGradient id="td${seed}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="48" y2="0" spreadMethod="repeat">`
+    + '<stop offset="0" stop-color="#fff" stop-opacity="0.45"/><stop offset="0.5" stop-color="#fff" stop-opacity="1"/><stop offset="1" stop-color="#fff" stop-opacity="0.45"/>'
+    + `<animateTransform attributeName="gradientTransform" type="translate" from="0 0" to="48 0" begin="-${ago}s" dur="${TIDE_S}s" repeatCount="indefinite"/>`
+    + `</linearGradient><mask id="tm${seed}" maskUnits="userSpaceOnUse" x="0" y="0" width="${LINE_COLS}" height="${LINE_ROWS}"><rect width="${LINE_COLS}" height="${LINE_ROWS}" fill="url(#td${seed})"/></mask></defs>`
+  const tick = TICK.map(([x, y]) => `<rect x="${x}" y="${y}" width="1" height="1"/>`).join('')
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${LINE_W}" height="${LINE_H}" viewBox="0 0 ${LINE_COLS} ${LINE_ROWS}">${defs}`
+    + `<g fill="#d97757" shape-rendering="crispEdges">${tick}</g>`
+    + `<rect x="${x0}" y="2" width="${w}" height="1" fill="url(#ln${seed})" mask="url(#tm${seed})"/></svg>`
+}
+
+// What the answer hands over to use: its web addresses and its short code blocks (a command to run, a line to paste),
+// at most three, each with a copy button, so they need not be found again in the text above.
+function readResources(answer: string) {
+  const out: { kind: 'link' | 'code'; text: string }[] = []
+  const seen = new Set<string>()
+  const put = (kind: 'link' | 'code', text: string) => {
+    const t = text.trim()
+    if (!t || seen.has(t) || out.length >= 3) return
+    seen.add(t)
+    out.push({ kind, text: t })
+  }
+  for (const m of answer.matchAll(/```[^\n]*\n([\s\S]*?)```/g)) {
+    const body = m[1].trim()
+    if (body.split('\n').length > 3) continue
+    if (/^https?:\/\/\S+$/.test(body)) put('link', body)
+    else put('code', body)
+  }
+  const prose = answer.replace(/```[\s\S]*?```/g, ' ')
+  for (const m of prose.matchAll(/https?:\/\/[^\s)<>"'`\]]+/g)) put('link', m[0].replace(/[.,;:!?]+$/, ''))
+  return out
+}
+
+// The copy button says Copied for 2 s after a press, so it is clear it worked.
+let copied = ''
+function copyResource($: any, text: string, id: string, surface: any) {
+  void $.ui.copy({ text, surface })
+  copied = id
+  $.ui.invalidate('ui.render')
+  $.clock.after(2000, () => { if (copied === id) { copied = ''; $.ui.invalidate('ui.render') } })
+}
+
+async function resourceRows($: any, e: any, d: Done, at: number, next?: any) {
+  const list = resources(d.answer)
+  if (!list.length) return null
+  // Each in a box like the app's own code blocks: a faint rounded border, the text, and a copy icon at the right end
+  // that turns into a tick for 2 s once pressed. (Asking the app to draw a second code block here shows nothing.)
+  const { Box, Text, Button } = $.ui.resolve(e) as Record<string, any>
+  const line = isLight ? '#d4d4d4' : '#3a3a3a'
+  const fill = isLight ? '#f5f5f5' : '#1f1f1f'
+  return (
+    <Box key={`done-${at}-res`} flexDirection="column" gap={1}>
+      {list.map((r, i) => (
+        <Box key={`done-${at}-res-${i}`} flexDirection="row" alignItems="center" justifyContent="space-between" gap={2}
+          borderStyle="round" borderColor={line} backgroundColor={fill} paddingX={2} paddingY={0}>
+          <Text wrap="truncate">{r.text.replace(/\n/g, ' ⏎ ')}</Text>
+          <Button key={`done-${at}-res-${i}-copy`} plain dimColor={copied !== `${at}-${i}`} label={copied === `${at}-${i}` ? '✓' : '⧉'}
+            hover={{ scope: `done-${at}-res-${i}-copy`, backgroundColor: hoverBg() }}
+            onPress={(press: any) => copyResource($, r.text, `${at}-${i}`, press?.surface)} />
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
+// The proposed next step under a finished turn, in Claude's orange, when the answer names one clearly.
+function nextRow($: any, e: any, d: Done, at: number) {
+  const step = nextStep(d.answer)
+  if (!step) return null
+  const { Box, Text } = $.ui.resolve(e) as Record<string, any>
+  return (
+    <Box key={`done-${at}-next`} flexDirection="row" gap={1} paddingLeft={1}>
+      <Text color="#d97757" bold>→ Next</Text>
+      <Text wrap="wrap">{step}</Text>
+    </Box>
+  )
+}
+
+// The steps of a finished turn, one dim line each, numbered.
+function stepList($: any, e: any, d: Done, at: number) {
+  const { Box, Text } = $.ui.resolve(e) as Record<string, any>
+  return (
+    <Box key={`done-${at}-steps`} flexDirection="column" paddingLeft={2}>
+      {d.labels.map((l, i) => <Text key={`done-${at}-step-${i}`} dimColor wrap="truncate">{`${i + 1}. ${l}`}</Text>)}
+    </Box>
+  )
+}
+
+// Turns shorter than this get a quiet line under the answer, not the big word.
+const SMALL_TURN_MS = 20 * 1000
+
+// Under a finished turn's answer: one big pixel word, ✓ DONE, or YOUR TURN / NEED YOUR INPUT when the answer needs the person, with
+// the steps, the time and the switch that shows them beside it. A short turn gets a quiet line instead.
+// Under a finished turn's answer: the answer, then the done row.
+async function doneCard($: any, e: any, next: any, at: number) {
+  const { Box } = $.ui.resolve(e) as Record<string, any>
+  // The questions the list below shows leave the answer text, so each reads once; links and code blocks stay in it,
+  // drawn by the app with its own copy button.
+  const d = done[at]
+  const strip = summaryOn && !d.stopped && asks(d.answer)
+  const inner = await next(strip ? { ...e, props: { ...(e.props ?? {}), text: withoutAsked(String((e.props as any)?.text ?? '')) } } : e)
+  return (
+    <Box key={`done-${at}`} flexDirection="column" gap={1}>
+      {inner}
+      {await doneRow($, e, at, next)}
+    </Box>
+  )
+}
+
+// The done row: STOPPED and YOUR TURN / NEED YOUR INPUT as the big pixel word with its badge, a plain finish as the orange line, with
+// the steps, the time and show steps beside it; the steps listed under it when shown. A short plain finish gets only
+// a quiet mark: a stop or a question always gets the word, however short the turn.
+async function doneRow($: any, e: any, at: number, next?: any) {
+  const d = done[at]
+  const { Box, Text, Button, Svg } = $.ui.resolve(e) as Record<string, any>
+  const ask = !d.stopped && asks(d.answer)
+  const plain = !d.stopped && !ask
+  // Commands when every step ran one (Bash, PowerShell), steps when it also read, edited or searched.
+  const noun = d.labels.length > 0 && d.labels.every(l => /^(Bash|PowerShell)/.test(l)) ? 'command' : 'step'
+  const facts = `${d.steps} ${noun}${d.steps === 1 ? '' : 's'} · ${clock(d.ms)}`
+  // Only questions: the word says so. Anything to do as well: it hands over, YOUR TURN and OVER TO YOU taking turns
+  // from one done row to the next so the wording stays fresh.
+  const items = ask ? questions(d.answer) : []
+  const onlyAsks = items.length > 0 && items.every(q => q.asks)
+  const word = d.stopped ? '■ STOPPED'
+    : onlyAsks ? '? NEED YOUR INPUT'
+    : at % 2 ? '→ OVER TO YOU' : '▶ YOUR TURN'
+  const said = word.slice(2).toLowerCase().replace(/^./, c => c.toUpperCase())
+  const mark = !Svg
+    ? <Text color="#d97757">{d.stopped ? '■' : ask ? '?' : '✓'}</Text>
+    : !plain
+    ? <Svg source={pixelWord(word, '#d97757')} alt={said} width={pixelWidth(word)} height={PIXEL_H} />
+    : d.ms >= SMALL_TURN_MS
+    ? <Svg source={pixelLine(at, await $.clock.now())} alt="Done" width={LINE_W} height={LINE_H} />
+    : <Text color="#d97757">✓</Text>
+  return (
+    <Box key={`done-${at}-row`} flexDirection="column" gap={1}>
+      <Box key={`done-${at}-card`} flexDirection="row" flexWrap="wrap" alignItems="center" gap={2}>
+        {mark}
+        <Text dimColor>{facts}</Text>
+        <Button key={`done-${at}-btn`} plain dimColor label={d.open ? `hide ${noun}s` : `show ${noun}s`} onPress={() => unfold($, at)} />
+      </Box>
+      {ask && summaryOn
+        // One question reads as it is; several get an orange number each, with air between them.
+        ? <Box key={`done-${at}-asks`} flexDirection="column" paddingLeft={1}>
+            {questions(d.answer).flatMap((q, i, all) => [
+              // A thin orange line between questions, so each reads as its own.
+              i > 0 ? <Text key={`done-${at}-sep-${i}`} color="#d97757">{'─'.repeat(16)}</Text> : null,
+              <Box key={`done-${at}-ask-${i}`} flexDirection="row" alignItems="flex-start" gap={1}>
+                {all.length > 1 ? <Text color="#d97757" bold>{`${i + 1}`}</Text> : null}
+                {/* What it is at a glance: a question to answer, or a thing to do. */}
+                {Svg
+                  ? <Svg source={badgeSvg(q.asks ? '?' : '☐', '#d97757')} alt={q.asks ? 'Question' : 'To do'} width={9 * BADGE_PX} height={9 * BADGE_PX} />
+                  : <Text color="#d97757">{q.asks ? '?' : '☐'}</Text>}
+                {/* A choice reads as its question, then each option on a line of its own after an orange letter. */}
+                <Box flexDirection="column">
+                  {(() => {
+                    const c = choices(q.text)
+                    // "A, B or C?" with the options described further up in the answer: take each one's text from there.
+                    if (c.options.length && c.options.every((o, j) => o === String.fromCharCode(65 + j))) {
+                      const found = c.options.map(o => letterOption(d.answer, o))
+                      if (found.every(Boolean)) c.options = found as string[]
+                    }
+                    return [
+                      c.stem ? <Text key={`done-${at}-ask-${i}-q`} bold wrap="wrap">{c.stem}</Text> : null,
+                      q.optional ? <Text key={`done-${at}-ask-${i}-opt`} color="#d97757">(optional)</Text> : null,
+                      // Options that are only their own letters ("A, B or C?") read as one row of letters.
+                      c.options.every((o, j) => o === String.fromCharCode(65 + j))
+                        ? <Box key={`done-${at}-ask-${i}-letters`} flexDirection="row" gap={3}>
+                            {c.options.map((o, j) => <Text key={`done-${at}-ask-${i}-l${j}`} color="#d97757" bold>{o}</Text>)}
+                          </Box>
+                        : null,
+                      ...(c.options.every((o, j) => o === String.fromCharCode(65 + j)) ? [] : c.options).map((o, j) => (
+                        <Box key={`done-${at}-ask-${i}-${j}`} flexDirection="row" gap={1}>
+                          <Text color="#d97757" bold>{String.fromCharCode(65 + j)}</Text>
+                          <Text wrap="wrap">{o}</Text>
+                        </Box>
+                      )),
+                    ]
+                  })()}
+                </Box>
+              </Box>,
+            ])}
+          </Box>
+        : null}
+      {summaryOn ? nextRow($, e, d, at) : null}
+      {d.open ? stepList($, e, d, at) : null}
+    </Box>
+  )
+}
+
+// Light or dark, from the app's theme setting (as effortless reads it), checked at most every 4 s. The strip's hover
+// box is a shade off the strip's own colour: dark grey on dark, a pale grey on light.
+let isLight = false
+let themeCheckedAt = 0
+async function refreshTheme($: any) {
+  const now = Date.now()
+  if (now - themeCheckedAt < 4000) return
+  themeCheckedAt = now
+  const rows = await $.config.list().catch(() => [])
+  const value = (rows as any[]).find(row => row.key === 'theme')?.value
+  const light = typeof value === 'string' && value.startsWith('light')
+  if (light === isLight) return
+  isLight = light
+  $.ui.invalidate('ui.render')
+}
+const hoverBg = () => (isLight ? '#e8e5df' : '#2a2a2e')
+
+// A turn starts: from the person's prompt, or from Claude's own first step when nothing was sent (a background task
+// woke it). Every row already drawn is old; the card shows once the turn has run a few seconds.
+async function startTurn($: any, chat: Chat, text: string) {
+  chat.running = true
+  chat.mainDone = false
+  chat.prompt = text
+  dbg($, `turn start on=${chat.on} text=${chat.prompt.slice(0, 40)}`)
+  chat.baselineUntil = Date.now() + BASELINE_MS
+  // Every row drawn once now, inside the window, so what the chat already holds is known before the card shows.
+  $.ui.invalidate('ui.render')
+  // The person's row takes only a text rewrite, not a drawing, so the card lives in the turn's first step instead.
+  chat.underPrompt = false
+  chat.working = chat.on
+  chat.long = false
+  chat.turns += 1
+  await loadOwn($)
+  await loadBuiltIn($)
+  chat.startedAt = await $.clock.now()
+  chat.steps = []
+  chat.cardKey = ''
+  chat.timer?.cancel()
+  // Only once a step exists: the card lives in a step row, so a plain text answer with no steps would otherwise be
+  // hidden after 3 s with nothing in its place until it finished. A later first step goes long through track().
+  chat.timer = $.clock.after(LONG_AFTER_MS, () => { if (chat.steps.length > 0) goLong($, chat) })
+}
+
+// The update card (see update.tsx for its look and the pure parts).
+// One updCard for every chat: the module is shared by the chats of this app.
+let updCard: UpdateCard | null = null
+let updLastCheck = 'not checked yet'
+let updLoaded = false
+let updTimer: { cancel: () => void } | null = null
+
+function setCard($: any, next: UpdateCard | null) {
+  updCard = next
+  $.ui.invalidate('ui.render')
+}
+
+
+// This install's id: textless@<the marketplace it came from>, read off the cache folder it runs from.
+const pluginId = ($: any) => `textless@${String($.plugin.root).match(/cache[\\/]([^\\/]+)[\\/]/)?.[1] ?? 'effortless'}`
+const pluginsHomeOf = ($: any) => String($.plugin.root).replace(/[\\/]cache[\\/].*$/, '')
+
+async function installedVersion($: any): Promise<string | undefined> {
+  const text = await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`).catch(() => '')
+  try {
+    const v = (JSON.parse(typeof text === 'string' ? text : '') as { version?: unknown }).version
+    return typeof v === 'string' ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function updHome($: any): Promise<string | undefined> {
+  return String((await $.env.get('USERPROFILE').catch(() => '')) || (await $.env.get('HOME').catch(() => '')) || '') || undefined
+}
+
+async function runClaudeCli($: any, args: string[], opts: Record<string, unknown>) {
+  let last: unknown
+  for (const bin of claudeCandidates(await updHome($))) {
+    try {
+      return (await $.process.run([bin, ...args], opts)) as { exitCode: number; stdout: string; stderr: string }
+    } catch (error) {
+      last = error
+      if (!NOT_STARTED.test(String(error))) throw error
+    }
+  }
+  throw last
+}
+
+/** public.json from the stable branch, read with git: no web cache in the way. Nothing before textless is public there. */
+async function latestFromGit($: any): Promise<Release | undefined> {
+  const dir = `${pluginsHomeOf($)}/data/textless-release-check`
+  const git = (...args: string[]) => $.process.run(['git', '-C', dir, ...args], { timeoutMs: 60_000 })
+  if ((await git('rev-parse', '--git-dir').catch(() => null))?.exitCode !== 0) {
+    await $.process.run(['git', 'init', '-q', dir], { timeoutMs: 30_000 })
+    await git('remote', 'add', 'origin', 'https://github.com/HeyCubit/effortless.git')
+  }
+  const fetched = await git('fetch', '-q', '--depth', '1', '--filter=blob:none', 'origin', 'stable')
+  if (fetched.exitCode !== 0) return undefined
+  const shown = await git('show', `FETCH_HEAD:${RELEASES_PATH}`)
+  return shown.exitCode === 0 ? latestRelease(shown.stdout) : undefined
+}
+
+
+/** public.json in the marketplace's copy on this computer, after `claude plugin marketplace update`. */
+async function latestFromMarketplace($: any): Promise<Release | undefined> {
+  const name = pluginId($).split('@')[1]
+  await runClaudeCli($, ['plugin', 'marketplace', 'update', name], { timeoutMs: 120_000, env: GITHUB_OVER_HTTPS }).catch(() => null)
+  const known = await $.fs.read(`${pluginsHomeOf($)}/known_marketplaces.json`).catch(() => '')
+  let at = `${pluginsHomeOf($)}/marketplaces/${name}`
+  try {
+    const loc = (JSON.parse(String(known)) as Record<string, { installLocation?: unknown }>)[name]?.installLocation
+    if (typeof loc === 'string' && loc) at = loc
+  } catch { /* the default place */ }
+  const dir = pluginDirIn(String(await $.fs.read(`${at}/.claude-plugin/marketplace.json`).catch(() => ''))) ?? 'textless/plugin'
+  return latestRelease(String(await $.fs.read(`${at}/${dir}/public.json`).catch(() => '')))
+}
+
+/** The newest public release: git first; where git is missing or offline, the web and the marketplace's copy. */
+async function latestAvailable($: any): Promise<{ latest?: Release; how: string }> {
+  const fromGit = await latestFromGit($).catch(() => undefined)
+  const res = fromGit ? null : await $.http.fetch(`${RELEASES_URL}&t=${Date.now()}`, { headers: { accept: 'application/vnd.github.raw', 'user-agent': 'textless' } }).catch((error: unknown) => ({ ok: false, status: 0, text: String(error) }))
+  const fromWeb = res?.ok ? latestRelease(res.text) : undefined
+  const local = await latestFromMarketplace($).catch(() => undefined)
+  const best = [fromGit, fromWeb, local].filter((r): r is Release => !!r).reduce<Release | undefined>((a, r) => (!a || isNewer(r.version, a.version) ? r : a), undefined)
+  return { latest: best, how: `git ${fromGit?.version ?? '-'}; web ${fromWeb?.version ?? (res ? `- (${res.status})` : 'skipped')}; marketplace ${local?.version ?? '-'}` }
+}
+
+/** Looks for a newer version and offers it, unless Later put that version away less than a day ago. */
+async function checkUpdate($: any) {
+  if (updCard && updCard.stage !== 'offer') {
+    updLastCheck = `skipped while the ${updCard.stage} card shows`
+    return
+  }
+  const { latest, how } = await latestAvailable($)
+  const mine = await installedVersion($)
+  updLastCheck = `installed ${mine ?? 'unreadable'}; ${how}`
+  if (!latest || !mine || !isNewer(latest.version, mine)) {
+    if (updCard) setCard($, null)
+    return
+  }
+  const now = await $.clock.now()
+  const hidden = (await $.store.get('updateHidden').catch(() => null)) as { version: string; at: number } | null
+  if (updateSnoozed(hidden, latest.version, now)) return
+  if (updCard?.version !== latest.version) setCard($, { stage: 'offer', version: latest.version, note: latest.note, at: now })
+}
+
+/** /textless update: look now, ignoring Later, and say what was found. */
+async function checkUpdateNow($: any): Promise<string> {
+  await $.store.set('updateHidden', null).catch(() => undefined)
+  if (updCard && (updCard.stage === 'done' || updCard.stage === 'failed')) updCard = null
+  await checkUpdate($).catch((error: unknown) => { updLastCheck = `check failed: ${String(error).slice(0, 120)}` })
+  return updCard?.stage === 'offer' ? `textless ${updCard.version} is out: press Update above the prompt. (${updLastCheck})` : `textless is up to date. (${updLastCheck})`
+}
+
+
+// The desktop app keeps a chat on the folder it started with, and a reload reads that folder again: so the new
+// version's files go into it, or the reload would bring back the old code.
+async function syncRunningCopy($: any) {
+  const record = JSON.parse(String(await $.fs.read(`${pluginsHomeOf($)}/installed_plugins.json`))) as { plugins?: Record<string, { installPath?: unknown }[]> }
+  const installed = record.plugins?.[pluginId($)]?.map(x => x.installPath).filter((x): x is string => typeof x === 'string').at(-1)
+  const argv = syncPlan(String($.plugin.root), installed)
+  if (!argv) return
+  const r = await $.process.run(argv, { timeoutMs: 120_000 })
+  if (argv[0] === 'robocopy' ? r.exitCode >= 8 : r.exitCode !== 0) throw new Error(`copy failed (${r.exitCode})`)
+}
+
+let updTyped = ''
+// Types a command into an empty prompt box for the person to send with Enter, where the app takes none from a plugin.
+async function typeUpdCommand($: any, text: string): Promise<boolean> {
+  try {
+    const draft = String((await $.prompt.read()).text ?? '').trim()
+    if (draft !== '' && draft !== updTyped) return false
+    const filled = await $.prompt.fill({ text })
+    if (filled.isFilled) updTyped = text
+    return !!filled.isFilled
+  } catch {
+    return false
+  }
+}
+
+/** Update pressed: the marketplace and the plugin are updated as `claude plugin` does, then the plugins reloaded. */
+async function runUpdate($: any, from: UpdateCard) {
+  setCard($, { ...from, stage: 'updating' })
+  const step = async (args: string[]) => {
+    const r = await runClaudeCli($, args, { timeoutMs: 180_000, env: GITHUB_OVER_HTTPS })
+    if (r.exitCode !== 0) throw new Error(updateFailure(r.stderr || r.stdout) || `claude ${args.join(' ')} failed`)
+  }
+  try {
+    await step(['plugin', 'marketplace', 'update', pluginId($).split('@')[1]])
+    await step(['plugin', 'update', pluginId($)])
+  } catch (error) {
+    const message = String(error instanceof Error ? error.message : error)
+    setCard($, { ...from, stage: 'failed', detail: noClaudeHint(message, await updHome($)) ?? message })
+    return
+  }
+  await syncRunningCopy($).catch(() => undefined)
+  const now = await $.clock.now()
+  await $.store.set('updatedTo', { version: from.version, note: from.note, at: now })
+  setCard($, { ...from, stage: 'done', at: now, detail: UPDATE_LOADING })
+  const reloaded = await $.command.run({ command: 'reload-plugins', args: RELOAD_ARGS }).then(() => true, () => false)
+  if (!reloaded && (await typeUpdCommand($, `/reload-plugins ${RELOAD_ARGS}`))) setCard($, updCard ? { ...updCard, detail: 'Press Enter to load it' } : updCard)
+  // Still this code's words after a while: the reload did not load the new version, so a new chat has to.
+  $.clock.after(UPDATE_LOAD_WAIT_MS, () => { if (updCard && updCard.at === now && updCard.detail === UPDATE_LOADING) setCard($, { ...updCard, detail: NEW_CHAT }) })
+}
+
+/** Once per load: "Updated" when this load is the version the updCard installed, then a look for a newer one, and every
+ * six hours after. A reload has no session start, so the first draw runs it too. */
+async function afterLoad($: any) {
+  if (updLoaded) return
+  updLoaded = true
+  updTimer?.cancel()
+  updTimer = $.clock.every(UPDATE_CHECK_MS, () => void checkUpdate($).catch(() => undefined))
+  const updatedTo = (await $.store.get('updatedTo').catch(() => null)) as { version: string; note: string; at: number } | null
+  if (updatedTo && typeof updatedTo.version === 'string') {
+    await $.store.set('updatedTo', null).catch(() => undefined)
+    const fresh = (await installedVersion($)) === updatedTo.version
+    setCard($, { stage: 'done', version: updatedTo.version, note: updatedTo.note, at: await $.clock.now(), ...(fresh ? {} : { detail: NEW_CHAT }) })
+  }
+  await checkUpdate($).catch(() => undefined)
+}
+
+/** /textless card offer|updating|done|failed|off: draws the updCard with made-up words, to look at it. */
+async function previewCard($: any, stage: string): Promise<string> {
+  if (stage === 'off') {
+    setCard($, null)
+    return 'Update card cleared.'
+  }
+  if (!['offer', 'updating', 'done', 'failed'].includes(stage)) return 'Use /textless card offer, updating, done, failed or off.'
+  setCard($, { stage: stage as UpdateCard['stage'], version: '9.9.9', note: 'Questions from Claude show as a numbered list under its answer.', at: await $.clock.now(), ...(stage === 'done' ? { detail: 'Loaded in this chat.' } : stage === 'failed' ? { detail: 'could not reach github.com' } : {}) })
+  return `The update card shows its "${stage}" look (a preview). /textless card off clears it.`
+}
+
+
+/** The updCard to draw above the prompt now, or null. Desktop only: the terminal has /textless update. */
+async function shownUpdateCard($: any, surface: string): Promise<UpdateCard | null> {
+  if (surface === 'terminal' || !updCard) return null
+  if (updCard.stage === 'done' && (await $.clock.now()) - updCard.at >= UPDATED_CARD_MS) return null
+  if (updCard.stage === 'done') $.clock.after(UPDATED_CARD_MS + 100, () => $.ui.invalidate('ui.render'))
+  return updCard
+}
+
+
+// The update card, drawn with what each of its presses does.
+function updateCardOf($: any, e: any, c: UpdateCard) {
+  const share = async () => {
+    const r = await $.ui.copy({ text: SITE_URL, surface: e.surface }).catch(() => ({ isCopied: false }))
+    $.ui.toast(r?.isCopied ? 'Link copied. Send it to a friend.' : 'textless: could not copy the link')
+  }
+  const hide = async () => {
+    if (c.stage === 'offer') await $.store.set('updateHidden', { version: c.version, at: await $.clock.now() }).catch(() => undefined)
+    setCard($, null)
+  }
+  const copy = async (text: string) => {
+    const r = await $.ui.copy({ text, surface: e.surface }).catch(() => ({ isCopied: false }))
+    $.ui.toast(r?.isCopied ? 'Install command copied. Paste it in PowerShell or Terminal, then reopen the app.' : `textless: run ${text}`)
+  }
+  return updateCardTree($.ui.resolve(e), c, { update: () => void runUpdate($, c), hide: () => void hide(), share: () => void share(), copy: t => void copy(t), id: pluginId($) })
+}
+
+// ---- Chess with Claude ----
+// Chess against Claude, in the chat. The board sits above the prompt: a click on a piece and a click on where it goes
+// plays the person's move (white), sent as a message; Claude answers in the chat and ends with a MOVE: line, which this
+// module reads, checks against the rules and plays. The rules live here, so Claude only ever chooses a move.
+
+type ChessGame = {
+  fen: string
+  moves: string[]
+  waiting: 'you' | 'claude'
+  // Claude's tries at a legal move this turn; after two misses a legal move is played for it so the game never stalls.
+  tries: number
+  last?: [number, number]
+  over?: string
+}
+
+const CHESS_KEY = 'chess'
+const CHESS_GLYPH: Record<string, string> = { K: '♔', Q: '♕', R: '♖', B: '♗', N: '♘', P: '♙', k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' }
+const CHESS_LIGHT = '#c9b49a'
+const CHESS_DARK = '#8f6a52'
+const CHESS_PICKED = '#d97757'
+const CHESS_TARGET = '#eba88d'
+const CHESS_LAST = '#b8a07e'
+
+let chessGame: ChessGame | null = null
+let chessLoaded = false
+let chessPicked: number | null = null
+const CHESS_MARK = '\n\n[textless chess, for Claude]\n'
+
+async function chessLoad($: any) {
+  if (chessLoaded) return
+  chessLoaded = true
+  const saved = await $.store.get(CHESS_KEY).catch(() => null)
+  if (saved && typeof saved === 'object' && typeof (saved as ChessGame).fen === 'string') chessGame = saved as ChessGame
+}
+
+async function chessSave($: any) {
+  await $.store.set(CHESS_KEY, chessGame).catch(() => undefined)
+  $.ui.invalidate('ui.render')
+}
+
+const CHESS_ENDINGS: Record<Exclude<Outcome, null>, string> = {
+  checkmate: 'Checkmate',
+  stalemate: 'Stalemate, a draw',
+  fifty: 'Draw by the fifty-move rule',
+  material: 'Draw, neither side can mate',
+}
+
+function chessEnding(p: Position): string | undefined {
+  const o = outcome(p)
+  if (!o) return undefined
+  if (o === 'checkmate') return p.turn === 'w' ? 'Checkmate. Claude wins.' : 'Checkmate. You win!'
+  return `${CHESS_ENDINGS[o]}.`
+}
+
+function chessContextFor(p: Position, g: ChessGame): string {
+  const legal = legalMoves(p).map(uci).join(' ')
+  return [
+    'textless chess: you are playing black against the person, in this chat. The textless mod keeps the board and the rules; you only choose your move.',
+    `Position (FEN): ${toFen(p)}`,
+    `Board, white at the bottom (capitals are white):\n${picture(p)}`,
+    `Moves so far: ${g.moves.join(' ') || '(none)'}`,
+    `Your legal moves: ${legal}`,
+    'Choose one of those legal moves and play to win. Answer in one or two short, friendly sentences, like an opponent across the board, with no lists and no questions. Use no tools. End with a line that is exactly "MOVE: " and the move as written in the list, for example "MOVE: e7e5".',
+  ].join('\n')
+}
+
+// The move goes to Claude with the position and its legal moves under a marker. A plugin's own prompt never passes
+// its own prompt.submit hook, so the position cannot ride along as hidden context; the chat shows the message only up
+// to the marker instead (see chessShown).
+async function chessAsk($: any, text: string) {
+  const g = chessGame!
+  const full = `${text}${CHESS_MARK}${chessContextFor(parseFen(g.fen), g)}`
+  await $.prompt.submit({ text: full, asUser: true }).catch(() => $.ui.toast('textless chess: could not send the move to Claude.'))
+}
+
+// A chess message as the chat draws it: the line the person would have said, without the position under it.
+function chessShown(e: any): any {
+  const text = String(e.props?.text ?? '')
+  const cut = text.indexOf(CHESS_MARK)
+  return cut < 0 ? e : { ...e, props: { ...e.props, text: text.slice(0, cut) } }
+}
+
+async function chessNew($: any) {
+  chessGame = { fen: START, moves: [], waiting: 'you', tries: 0 }
+  chessPicked = null
+  await chessSave($)
+}
+
+async function chessEnd($: any) {
+  chessGame = null
+  chessPicked = null
+  await chessSave($)
+}
+
+async function chessPress($: any, sq: number) {
+  const g = chessGame
+  if (!g || g.over || g.waiting !== 'you') return
+  const p = parseFen(g.fen)
+  const mine = p.board[sq] && p.board[sq] === p.board[sq].toUpperCase()
+  if (chessPicked === null || mine) {
+    chessPicked = mine && chessPicked !== sq ? sq : null
+    $.ui.invalidate('ui.render')
+    return
+  }
+  // A pawn reaching the far side becomes a queen.
+  const move = legalMoves(p).find(m => m.from === chessPicked && m.to === sq && (!m.promo || m.promo === 'q'))
+  if (!move) return
+  chessPicked = null
+  await chessYourMove($, p, move)
+}
+
+async function chessYourMove($: any, p: Position, move: Move) {
+  const g = chessGame!
+  const words = describeMove(p, move)
+  const next = play(p, move)
+  g.fen = toFen(next)
+  g.moves.push(uci(move))
+  g.last = [move.from, move.to]
+  g.over = chessEnding(next)
+  g.waiting = g.over ? 'you' : 'claude'
+  g.tries = 0
+  await chessSave($)
+  if (g.over) await $.prompt.submit({ text: `♟ I play ${words}. ${g.over}`, asUser: true }).catch(() => undefined)
+  else await chessAsk($, `♟ I play ${words}. Your move.`)
+}
+
+// Claude's move from its answer: the last "MOVE: e7e5" line, checked against the legal moves.
+function chessMoveFrom(answer: string, p: Position): Move | null {
+  const all = [...answer.matchAll(/MOVE:\s*`?\s*([a-h][1-8])\s*-?\s*([a-h][1-8])\s*=?([qrbnQRBN])?/g)]
+  const hit = all[all.length - 1]
+  if (!hit) return null
+  const want = hit[1] + hit[2] + (hit[3] ?? '').toLowerCase()
+  const legal = legalMoves(p)
+  return legal.find(m => uci(m) === want) ?? legal.find(m => uci(m) === `${want}q`) ?? null
+}
+
+async function chessAnswered($: any, answer: string) {
+  const g = chessGame
+  if (!g || g.waiting !== 'claude') return
+  const p = parseFen(g.fen)
+  let move = chessMoveFrom(answer, p)
+  if (!move) {
+    g.tries++
+    if (g.tries < 2) {
+      await chessSave($)
+      await chessAsk($, '♟ That move is not legal here. Pick one from your legal moves and end with the MOVE: line.')
+      return
+    }
+    const legal = legalMoves(p)
+    move = legal[Math.floor(Math.random() * legal.length)]
+    $.ui.toast(`textless chess: Claude's move did not read, so ${uci(move)} was played for it.`)
+  }
+  const next = play(p, move)
+  g.fen = toFen(next)
+  g.moves.push(uci(move))
+  g.last = [move.from, move.to]
+  g.over = chessEnding(next)
+  g.waiting = 'you'
+  g.tries = 0
+  await chessSave($)
+}
+
+function chessBoardView($: any, e: any) {
+  const { Box, Text, Button } = $.ui.resolve(e) as Record<string, any>
+  const g = chessGame!
+  const p = parseFen(g.fen)
+  const targets = new Set(chessPicked === null ? [] : legalMoves(p).filter(m => m.from === chessPicked).map(m => m.to))
+  const status = g.over ?? (g.waiting === 'you' ? 'Your move: click a piece, then where it goes.' : 'Claude is thinking…')
+  const rows = []
+  for (let r = 7; r >= 0; r--) {
+    const cells = []
+    for (let f = 0; f < 8; f++) {
+      const sq = r * 8 + f
+      const piece = p.board[sq]
+      const shade = sq === chessPicked ? CHESS_PICKED : targets.has(sq) ? CHESS_TARGET : g.last?.includes(sq) ? CHESS_LAST : (r + f) % 2 ? CHESS_LIGHT : CHESS_DARK
+      // A Button takes a plain label only, so the square's colour is the Box around it and white's pieces are the
+      // outlined glyphs, black's the filled ones.
+      const glyph = piece ? CHESS_GLYPH[piece] : ' '
+      cells.push(
+        <Box key={`chess-cell-${sq}`} backgroundColor={shade}>
+          <Button key={`chess-${sq}`} plain label={` ${glyph} `} onPress={() => chessPress($, sq)} />
+        </Box>,
+      )
+    }
+    rows.push(
+      <Box key={`chess-row-${r}`} flexDirection="row">
+        <Text dimColor>{`${r + 1} `}</Text>
+        {cells}
+      </Box>,
+    )
+  }
+  // The band above the prompt has e.props.maxRows rows and drops a taller tree whole, without a word: the board is
+  // one header row and its eight ranks, and the file letters come only when there is room for them.
+  const room = typeof e.props?.maxRows === 'number' ? e.props.maxRows : 12
+  if (room < 9) return <Text key="chess" color="#d97757">{`♟ Chess with Claude · ${status} The board needs a taller window.`}</Text>
+  return (
+    <Box key="chess" flexDirection="column">
+      <Box key="chess-head" flexDirection="row" gap={1} alignItems="center">
+        <Text color="#d97757" bold>{`♟ Chess with Claude · ${status}`}</Text>
+        <Button key="chess-new" plain dimColor label="New game" onPress={() => chessNew($)} />
+        <Button key="chess-end" plain dimColor label="Close" onPress={() => chessEnd($)} />
+      </Box>
+      {rows}
+      {room >= 10 ? <Text dimColor>{'   a  b  c  d  e  f  g  h'}</Text> : null}
+    </Box>
+  )
+}
+
+// One hooks module per plugin, each event once: register.tsx calls these from its own hooks.
+
+async function chessStart($: any) {
+  await chessLoad($)
+  void $.command.register({ name: 'chess', description: 'Play chess against Claude in this chat.' }).catch(() => undefined)
+}
+
+// /chess: a new game, the one in play, or the board closed. Null when the command is not chess.
+async function chessCommand($: any, e: any): Promise<{ text: string } | null> {
+  if (e.command !== 'chess' && !String(e.command).endsWith(':chess')) return null
+  await chessLoad($)
+  const arg = String(e.args ?? '').trim().toLowerCase()
+  if (arg === 'end' || arg === 'close') {
+    await chessEnd($)
+    return { text: 'Chess board closed.' }
+  }
+  if (!chessGame || chessGame.over || arg === 'new') {
+    await chessNew($)
+    return { text: 'New game. You play white: the board is above the prompt. Click a piece, then where it goes.' }
+  }
+  $.ui.invalidate('ui.render')
+  return { text: 'Your game is above the prompt. /chess new starts over, /chess end closes it.' }
+}
+
+async function chessTurn($: any, e: any) {
+  if (e.agentId || (e.reason ?? 'answer') !== 'answer') return
+  await chessLoad($)
+  await chessAnswered($, String(e.answer ?? ''))
+}
+
+// The board above the prompt while a game is open, or null.
+async function chessBoard($: any, e: any) {
+  await chessLoad($)
+  return chessGame ? chessBoardView($, e) : null
+}
+
+export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    await setUp($)
+    await chessStart($)
+    void afterLoad($).catch(() => undefined)
+    return next(e)
+  })
+  on('command.run', async ($, e, next) => {
+    const chess = await chessCommand($, e)
+    if (chess) return chess
+    if (e.command !== 'textless' && !String(e.command).endsWith(':textless')) return next(e)
+    await setUp($)
+    const raw = String(e.args ?? '').trim()
+    const arg = raw.toLowerCase()
+    if (arg.startsWith('get ')) return { text: await getScene($, raw.slice(4).trim()) }
+    if (arg === 'next') {
+      await nextScene($)
+      return { text: 'Next scene picked.' }
+    }
+    if (arg.startsWith('set')) {
+      await loadOwn($)
+      await loadBuiltIn($)
+      const want = arg.slice(3).trim()
+      const sets = setList()
+      const found = sets.find(n => n === want || setLabel(n).toLowerCase() === want)
+      if (!found) return { text: `Sets: ${sets.map(setLabel).join(', ')}. Pick one with /textless set <name>.` }
+      await setSet($, found)
+      return { text: `textless set: ${setLabel(found)}.` }
+    }
+    if (arg === 'update') return { text: await checkUpdateNow($) }
+    if (arg.startsWith('card')) return { text: await previewCard($, arg.slice(4).trim()) }
+    if (arg === 'debug') {
+      debugOn = !debugOn
+      await $.store.set('debug', debugOn).catch(() => undefined)
+      return { text: debugOn ? 'textless debug log on: ~/.claude/textless/debug-<chat>.log' : 'textless debug log off.' }
+    }
+    if (arg.startsWith('summary')) {
+      const want = arg.slice(7).trim()
+      summaryOn = want === 'on' ? true : want === 'off' ? false : !summaryOn
+      await $.store.set('summary', summaryOn).catch(() => undefined)
+      $.ui.invalidate('ui.render')
+      return { text: summaryOn ? 'textless shows the questions, links and next step under answers.' : 'textless shows only the done line under answers.' }
+    }
+    if (arg === 'settings') {
+      await openSettings($)
+      return { text: 'textless settings opened in the app. The ⚙ opens them on the website.' }
+    }
+    if (arg === 'folder') {
+      const dir = await openFolder($)
+      return { text: `Your scenes folder: ${dir}. Drop GIF, PNG, WebP, JPG or SVG files in it (under about 95 KB each).` }
+    }
+    await toggle($, arg === 'on' ? true : arg === 'off' ? false : undefined)
+    return { text: (await chatOf($)).on ? 'textless on in this chat.' : 'textless off in this chat.' }
+  })
+  on('prompt.submit', async ($, e, next) => {
+    await setUp($)
+    const chat = await chatOf($)
+    dbg($, `prompt.submit seen running=${chat.running} mainDone=${chat.mainDone}`)
+    // A message sent while a turn runs, before its card shows, joins that turn. Once the card shows (or the turn has
+    // answered and only background tasks run), the turn so far folds into its done line and a new card starts under
+    // the message, so the card always sits below the latest thing the person said.
+    // While textless is on, the model is told that its questions get lifted out of the answer, so it writes them to
+    // stand alone. The note stays in the chat once sent, so it goes with the first message and then every HINT_EVERY
+    // messages (sent every time it added about 170 tokens to each message).
+    const hint = chat.on && summaryOn && (chat.hintedAt === null || chat.prompts - chat.hintedAt >= HINT_EVERY)
+    if (hint) chat.hintedAt = chat.prompts
+    chat.prompts += 1
+    const sent = hint ? { ...e, context: [...(((e as any).context ?? []) as string[]), QUESTION_HINT] } : e
+    if (chat.running && !chat.mainDone && !chat.long) return next(sent)
+    if (chat.running) endTurn($, chat)
+    await startTurn($, chat, String((e as any).text ?? ''))
+    return next(sent)
+  })
+  // A subagent's steps name it, so the agents still working are known before they finish. A main-thread step with no
+  // turn running is a turn Claude started without a prompt (a background task finished and woke it): it starts here.
+  on('turn.step', async function* ($, e, next) {
+    const chat = await chatOf($)
+    if (e.agentId !== undefined) chat.agents.add(String(e.agentId))
+    else if (!chat.running || chat.mainDone) {
+      // A main step after the main turn answered (its background tasks still running) is a new turn Claude began on
+      // its own: the answered one folds into its done card first.
+      if (chat.mainDone) endTurn($, chat)
+      await setUp($)
+      dbg($, 'turn start without a prompt')
+      await startTurn($, chat, '')
+    }
+    return yield* next(e)
+  })
+  // A Stop hook that blocks sends Claude back to work inside the same turn, so the answer it just gave would fold as
+  // text said along the way. It was an answer: it stays shown, and the turn's last answer still gets the done line.
+  on('classic.Stop', async ($, e, next) => {
+    const r = (await next(e)) as { block?: string } | undefined
+    const chat = await chatOf($)
+    const said = String((e as any).last_assistant_message ?? '').replace(/\s+/g, ' ').trim()
+    if (r?.block && chat.working && said) {
+      chat.kept.push(said)
+      dbg($, `stop hook blocked, answer kept ${said.slice(0, 40)}`)
+      $.ui.invalidate('ui.render')
+    }
+    return r
+  })
+  on('turn.complete', async ($, e, next) => {
+    await chessTurn($, e)
+    const chat = await chatOf($)
+    const agentId = (e as any).agentId
+    if (agentId) {
+      // One subagent's run ended, not the chat's turn. The card stays unless the main turn is already over and this
+      // was the last agent working.
+      chat.agents.delete(String(agentId))
+      if (chat.mainDone && chat.agents.size === 0) endTurn($, chat)
+      return next(e)
+    }
+    chat.stopped = ((e as any).reason ?? 'answer') !== 'answer'
+    chat.answer = String((e as any).answer ?? '')
+    chat.durationMs = Number((e as any).durationMs ?? 0)
+    if (chat.agents.size > 0 && chat.working) {
+      chat.mainDone = true
+      $.ui.invalidate('ui.render')
+      chat.timer?.cancel()
+      chat.timer = $.clock.after(AGENT_WAIT_MS, () => endTurn($, chat))
+      return next(e)
+    }
+    endTurn($, chat)
+    return next(e)
+  })
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    const chat = await chatOf($)
+    const p = (e.props ?? {}) as Record<string, any>
+    if (!chat.working) {
+      await loadDone($)
+      oldTools.add(String(p.tool_use_id ?? ''))
+      if (!chat.on) return next(e)
+      return folded($, e, next, [String(p.tool_use_id ?? '')])
+    }
+    if (Date.now() < chat.baselineUntil && p.isRunning !== true) oldTools.add(String(p.tool_use_id ?? ''))
+    if (p.tool_use_id) stepLabels.set(String(p.tool_use_id), stepLabel(String(p.tool ?? 'step'), p.input))
+    const place = track($, chat, String(p.tool_use_id ?? ''), p.isRunning === true)
+    dbg($, `ToolUse ${String(p.tool_use_id ?? '').slice(-8)} running=${p.isRunning} place=${place} long=${chat.long} on=${JSON.stringify(p.onScreen)}`)
+    if (place === 'other') return next(e)
+    if (place === 'later' || chat.underPrompt) return blank($, e)
+    if (reanchor($, chat, p.onScreen)) return blank($, e)
+    return card($, e, chat, String(p.input?.description ?? p.tool ?? ''))
+  })
+  // Parallel tool calls are folded into a group; while the group is this turn's first step, it is the card.
+  // The desktop folds a turn's steps into a group that collapses. A group holding the card's step draws the card
+  // itself, so the card never folds away into it; a group of this turn's later steps draws nothing.
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+    const chat = await chatOf($)
+    const p = (e.props ?? {}) as Record<string, any>
+    const ids = (Array.isArray(p.calls) ? p.calls : []).map((c: any) => String(c?.tool_use_id ?? c?.id ?? '')).filter(Boolean)
+    if (!chat.working) {
+      await loadDone($)
+      for (const id of ids) oldTools.add(id)
+      if (!chat.on) return next(e)
+      return folded($, e, next, ids)
+    }
+    if (Date.now() < chat.baselineUntil && p.isActive !== true) for (const id of ids) oldTools.add(id)
+    for (const c of Array.isArray(p.calls) ? p.calls : []) if (c?.tool_use_id) stepLabels.set(String(c.tool_use_id), stepLabel(String(c.tool ?? 'step'), c.input))
+    for (const id of ids) track($, chat, id, p.isActive === true)
+    dbg($, `ToolGroup n=${ids.length} active=${p.isActive} first=${ids.includes(chat.cardKey)}`)
+    if (!ids.some((id: string) => chat.steps.includes(id))) return next(e)
+    if (!ids.includes(chat.cardKey) || chat.underPrompt) return blank($, e)
+    if (reanchor($, chat, p.onScreen)) return blank($, e)
+    return card($, e, chat, 'Running several steps')
+  })
+  // The settings pane: on or off, which scene, and the person's own scenes folder.
+  on('ui.render', { component: 'Pane', requestId: 'textless-settings' }, async ($, e) => {
+    const { Box, Text, Button, Svg, Link } = $.ui.resolve(e) as Record<string, any>
+    const tabs = (
+      <Box key="tabs" flexDirection="row" gap={1}>
+        <Button key="tab-settings" variant={paneTab === 'settings' ? 'primary' : undefined} label="Settings" onPress={() => { paneTab = 'settings'; $.ui.invalidate('ui.render') }} />
+        <Button key="tab-community" variant={paneTab === 'community' ? 'primary' : undefined} label="Community" onPress={() => { paneTab = 'community'; $.ui.invalidate('ui.render'); void refreshMarket($) }} />
+      </Box>
+    )
+    if (paneTab === 'community') {
+      const { site } = await marketUrls($)
+      const showing = set === 'yours' && pick !== null ? sceneList()[pick % sceneList().length]?.file : undefined
+      return (
+        <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
+          {tabs}
+          <Text dimColor wrap="wrap">Scenes people made and shared. Use one and it plays while Claude works, in every chat.</Text>
+          {market.error ? <Text color="#d97757" wrap="wrap">{market.error}</Text> : null}
+          {market.loading && !market.scenes.length ? <Text dimColor>Loading the market…</Text> : null}
+          {!market.loading && !market.error && market.at && !market.scenes.length ? <Text dimColor>No scenes shared yet.</Text> : null}
+          {market.scenes.map(s => {
+            const file = `${s.id}.svg`
+            const state = showing === file ? 'In use' : own.some(o => o.name === file) ? 'Added' : ''
+            const thumb = thumbs.get(s.id)
+            const tw = 200
+            const th = s.width && s.height ? Math.round((tw * Number(s.height)) / Number(s.width)) : tw
+            return (
+              <Box key={`m-${s.id}`} flexDirection="column" gap={0}>
+                {Svg && thumb ? <Svg source={thumb} alt={String(s.name)} width={tw} height={Math.min(th, 300)} /> : <Text dimColor>{thumb === '' ? '(no preview)' : '…'}</Text>}
+                <Box flexDirection="row" gap={2} alignItems="center">
+                  <Text bold wrap="truncate">{String(s.name)}</Text>
+                  <Text dimColor wrap="truncate">{`by ${String(s.author)}`}</Text>
+                  {Number(s.stars) > 0 ? <Text color="#d77757">{`★ ${Number(s.stars)}`}</Text> : null}
+                </Box>
+                <Box flexDirection="row" gap={2} alignItems="center">
+                  {state
+                    ? <Text color="#d77757">{state}</Text>
+                    : <Button key={`m-${s.id}-use`} variant="primary" label="Use" onPress={() => useFromPane($, s)} />}
+                  {state === 'Added' ? <Button key={`m-${s.id}-again`} label="Use" onPress={() => useFromPane($, s)} /> : null}
+                  {/* A Link takes only https: or http://localhost, so any other address is left out. */}
+                  {Link && /^(https:\/\/|http:\/\/localhost[:/])/.test(site) ? <Link href={`${site}#${s.id}`} label="Report" /> : null}
+                </Box>
+              </Box>
+            )
+          })}
+          <Button key="m-refresh" plain label="Refresh" onPress={() => refreshMarket($, true)} />
+        </Box>
+      )
+    }
+    const list = sceneList()
+    const dir = await scenesDir($)
+    const shown = pick !== null ? list[pick % list.length] : null
+    const preview = shown ?? list[0]
+    const size = preview?.svg.match(/<svg[^>]*\swidth="(\d+)"[^>]*\sheight="(\d+)"/)
+    const chatOn = (await chatOf($)).on
+    const pw = 280
+    const ph = size ? Math.round((Number(size[2]) / Number(size[1])) * pw) : pw
+    return (
+      <Box flexDirection="column" paddingX={2} paddingY={1} gap={1}>
+        {tabs}
+        <Box flexDirection="row" gap={2} alignItems="center">
+          <Text bold>Hide the text while Claude works</Text>
+          <Button key="pane-toggle" variant={chatOn ? 'primary' : undefined} label={chatOn ? 'On' : 'Off'} onPress={() => toggle($)} />
+        </Box>
+        <Text bold>Set</Text>
+        <Box flexDirection="row" gap={1} flexWrap="wrap">
+          {setList().map(name => (
+            <Button key={`set-${name}`} variant={name === (setList().includes(set) ? set : CLAWD_SET) ? 'primary' : undefined} label={setLabel(name)} onPress={() => setSet($, name)} />
+          ))}
+        </Box>
+        <Text bold>Scene</Text>
+        {Svg && preview ? <Svg source={preview.svg} alt={preview.name} width={pw} height={ph} /> : null}
+        <Box flexDirection="column">
+          <Box flexDirection="row" gap={1} alignItems="center">
+            <Text color={pick === null ? '#d77757' : undefined} dimColor={pick !== null}>{pick === null ? '●' : '○'}</Text>
+            <Button key="pick-rotate" plain label="A different one each turn" onPress={() => setPick($, null)} />
+          </Box>
+          {list.map((sc, i) => (
+            <Box key={`pick-${i}`} flexDirection="row" gap={1} alignItems="center">
+              <Text color={pick === i ? '#d77757' : undefined} dimColor={pick !== i}>{pick === i ? '●' : '○'}</Text>
+              <Button key={`pick-${i}-btn`} plain label={sc.name} onPress={() => setPick($, i)} />
+            </Box>
+          ))}
+        </Box>
+        <Text bold>Your own scenes</Text>
+        <Text dimColor wrap="wrap">Drop GIF, PNG, WebP, JPG or SVG files (under about 95 KB) in this folder and they join the list.</Text>
+        <Text dimColor wrap="truncate">{dir}</Text>
+        <Box flexDirection="row" gap={2}>
+          <Button key="pane-folder" label="Open folder" onPress={() => openFolder($)} />
+          <Button key="pane-copy" label="Copy path" onPress={(press: any) => { void $.ui.copy({ text: dir, surface: press.surface }) }} />
+        </Box>
+      </Box>
+    )
+  })
+  // The card hangs under the prompt that started the turn, so it shows a few seconds in, before the first step, and
+  // never moves.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    const chat = await chatOf($)
+    const text = String((e.props as any)?.text ?? '')
+    if (!chat.working || Date.now() < chat.baselineUntil) {
+      if (text !== chat.prompt || !chat.working) oldPrompts.add(text)
+      return next(chessShown(e))
+    }
+    if (!chat.long || !chat.underPrompt || text !== chat.prompt) return next(chessShown(e))
+    const inner = await next(chessShown(e))
+    const { Box } = $.ui.resolve(e) as Record<string, any>
+    return (
+      <Box flexDirection="column">
+        {inner}
+        {await card($, e, chat, chat.steps.length > 0 ? 'Working through the steps' : 'Thinking')}
+      </Box>
+    )
+  })
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    const chat = await chatOf($)
+    const text = String((e.props as any)?.text ?? '')
+    if (!chat.working) {
+      oldTexts.add(text)
+      // Off shows the chat as Claude Code draws it, finished turns too.
+      if (!chat.on) return next(e)
+      await loadDone($)
+      const at = foldedTexts.get(text)
+      if (at !== undefined) return blank($, e)
+      const mine = doneAnswers.get(text)
+      return mine === undefined ? next(e) : doneCard($, e, next, mine)
+    }
+    if (Date.now() < chat.baselineUntil) oldTexts.add(text)
+    if (oldTexts.has(text)) return next(e)
+    if (isKept(chat, text)) return next(e)
+    // The main turn has answered while background tasks still run: its answer may ask something, so it shows. Only
+    // that answer: anything said after it belongs to whatever comes next and stays hidden.
+    if (chat.mainDone && inAnswer(chat, text)) {
+      dbg($, `text shown (answer while agents run) ${text.slice(0, 40)}`)
+      return next(e)
+    }
+    chat.turnTexts.add(text)
+    chat.lastText = text
+    if (!chat.long) {
+      dbg($, `text shown (not long yet) ${text.slice(0, 40)}`)
+      return next(e)
+    }
+    return blank($, e)
+  })
+  // A new version: offered, updating, or just updated, above the prompt. Another mod may draw there too, so its band
+  // stays, under the card.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    void afterLoad($).catch(() => undefined)
+    const upd = await shownUpdateCard($, String(e.surface ?? ''))
+    const board = await chessBoard($, e)
+    if (!upd && !board) return next(e)
+    const inner = await next(e)
+    const { Box } = $.ui.resolve(e) as Record<string, any>
+    return (
+      <Box flexDirection="column">
+        {upd ? updateCardOf($, e, upd) : null}
+        {inner}
+        {board}
+      </Box>
+    )
+  })
+  // One icon in the model strip turns the card on and off for every chat. Another mod may draw this strip too, so its
+  // drawing is kept and the icon is put after it.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    await setUp($)
+    const inner = await next(e)
+    if (e.surface !== 'desktop') return inner
+    const { Box, Text, Button, Svg } = $.ui.resolve(e) as Record<string, any>
+    // The strip takes text and buttons only: a Text can be coloured but not pressed, a Button pressed but not coloured.
+    // So "Aa" says the state (Clawd orange and struck through while the text is hidden, grey when not) and the power
+    // sign beside it takes the click. Hovering either puts one box behind both, like effortless's Auto.
+    await refreshTheme($)
+    const drawn = { chat: await chatOf($), id: String(await $.session.id().catch(() => '')) }
+    const enabled = drawn.chat.on
+    const hover = { scope: 'textless', backgroundColor: hoverBg() }
+    // The power sign and "Aa" sit in one box of their own, so the strip keeps them side by side.
+    return (
+      <Box flexDirection="row" alignItems="center">
+        {inner}
+        <Box key="textless-switch" flexDirection="row" alignItems="center">
+          <Button key="textless" plain dimColor={!enabled} label=" ⏻ " hover={hover} onPress={() => toggle($, undefined, drawn)} />
+          {/* The strip draws no images (an Svg here vanished in the app), so the logo is the struck "Aa" as text. */}
+          <Text color={enabled ? '#d77757' : undefined} dimColor={!enabled} bold={enabled} strikethrough={enabled} hover={hover}>{'Aa '}</Text>
+        </Box>
+        <Button key="textless-settings" plain dimColor label=" ⚙︎ " hover={{ scope: 'textless-settings', backgroundColor: hoverBg() }} onPress={() => openWebSettings($)} />
+      </Box>
+    )
+  })
+}
