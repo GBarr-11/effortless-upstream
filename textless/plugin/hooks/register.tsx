@@ -510,11 +510,12 @@ async function card($: any, e: any, chat: Chat, step: string) {
   // The Chess set (under Interactive sets): its one scene is the board, a game started on the first card.
   if (sceneList()[sceneIndex(chat)]?.set === INTERACTIVE_CHESS) {
     await chessLoad($)
+    await chessTake($)
     if (!chessGame) await chessNew($)
     chessAnchor = 'chat'
     return chessCard($, e, chat, step)
   }
-  if (chessGame && chessAnchor === 'chat') return chessCard($, e, chat, step)
+  if (chessGame && chessAnchor === 'chat' && (await chessOwns($))) return chessCard($, e, chat, step)
   try {
     const out = await drawCard($, e, chat, step)
     dbg($, `card drawn scenes=${sceneList().length} svg=${Boolean(($.ui.resolve(e) as any).Svg)}`)
@@ -1583,7 +1584,7 @@ async function doneCard($: any, e: any, next: any, at: number) {
     <Box key={`done-${at}`} flexDirection="column" gap={1}>
       {inner}
       {await doneRow($, e, at, next)}
-      {(await chatOf($)).newestAt === at ? chessBelow($, e) : null}
+      {(await chatOf($)).newestAt === at ? (await chessOwns($), chessBelow($, e)) : null}
     </Box>
   )
 }
@@ -2001,6 +2002,34 @@ let chessLoaded = false
 let chessPicked: number | null = null
 const CHESS_MARK = '\n\n[textless chess, for Claude]\n'
 
+// One board at a time across chats: the game is kept for every chat, and the chat that started or took it last owns it.
+// The others draw nothing for it, and a click there does nothing. A chat checks with the store when it draws.
+const CHESS_OWNER = 'chessOwner'
+let chessOwned = true
+async function chessOwns($: any, claim = false): Promise<boolean> {
+  try {
+    const id = String(await $.session.id().catch(() => 'unknown'))
+    const owner = await $.store.get(CHESS_OWNER).catch(() => null)
+    if (!owner || claim) {
+      await $.store.set(CHESS_OWNER, id).catch(() => undefined)
+      chessOwned = true
+    } else chessOwned = owner === id
+  } catch {
+    chessOwned = true
+  }
+  return chessOwned
+}
+
+// This chat takes the game from the chat that had it, with the moves it made there.
+async function chessTake($: any) {
+  if (await chessOwns($)) return
+  await chessOwns($, true)
+  chessLoaded = false
+  chessGame = null
+  chessPicked = null
+  await chessLoad($)
+}
+
 async function chessLoad($: any) {
   if (chessLoaded) return
   chessLoaded = true
@@ -2136,6 +2165,10 @@ async function chessEnd($: any) {
 }
 
 async function chessPress($: any, sq: number) {
+  if (!(await chessOwns($))) {
+    $.ui.invalidate('ui.render')
+    return
+  }
   const g = chessGame
   dbg($, `chess press sq=${sq} picked=${chessPicked} waiting=${g?.waiting} over=${g?.over ?? '-'}`)
   if (!g || g.over || g.waiting !== 'you') return
@@ -2340,6 +2373,7 @@ async function chessStart($: any) {
 async function chessCommand($: any, e: any): Promise<{ text: string } | null> {
   if (e.command !== 'chess' && !String(e.command).endsWith(':chess')) return null
   await chessLoad($)
+  await chessTake($)
   const arg = String(e.args ?? '').trim().toLowerCase()
   if (arg === 'end' || arg === 'close') {
     await chessEnd($)
@@ -2367,7 +2401,7 @@ async function chessTurn($: any, e: any) {
 
 // The board in the chat, where it is drawn once a message has been sent: under the newest answer, or null.
 function chessBelow($: any, e: any) {
-  return chessGame && chessAnchor === 'chat' ? chessBoardView($, e) : null
+  return chessGame && chessAnchor === 'chat' && chessOwned ? chessBoardView($, e) : null
 }
 
 // The card's place while Claude works and a game is open: the board with the card's own buttons above it. No size
@@ -2829,6 +2863,7 @@ export const register: Register = on => {
     const text = String(p.text ?? '')
     if (!chessGame || !chessOut || !text.includes(chessOut) || chessAnchor !== 'command') return next(e)
     const { Box, Text } = $.ui.resolve(e) as Record<string, any>
+    if (!(await chessOwns($))) return <Text key="chess-out" dimColor>The chess board is open in another chat. /chess brings it here.</Text>
     return (
       <Box key="chess-out" flexDirection="column" gap={1}>
         <Text dimColor wrap="truncate">{text.replace(`${chessOut}: `, '')}</Text>
