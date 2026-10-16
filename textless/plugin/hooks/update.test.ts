@@ -10,7 +10,7 @@ function fakeHost(on: any, opts: { failUpdate?: boolean } = {}) {
   const store = new Map<string, unknown>()
   const ran: string[][] = []
   const copied: string[] = []
-  on('env.get', () => ({ value: '' }))
+  on('env.get', ($: any, e: any) => ({ value: e.name === 'TEXTLESS_OFFER_ANYWHERE' ? '1' : '' }))
   on('fs.list', () => ({ value: [] }))
   on('fs.write', () => ({ value: undefined }))
   on('fs.read', ($: any, e: any) => {

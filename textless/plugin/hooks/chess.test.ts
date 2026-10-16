@@ -281,3 +281,15 @@ describe('a lost opponent timer', () => {
     expect(saved.moves.length).toBeGreaterThan(1)
   })
 })
+
+describe('the terminal board', () => {
+  test('draws the pieces as letters on coloured squares, since a plain terminal cannot draw pictures', async ($, on) => {
+    fakeHost(on)
+    mock.clock(on)
+    const e: any = $
+    const r = await e.command.run({ command: 'chess', args: 'white' })
+    const row: any = await e.ui.mount({ plugin: 'textless', surface: 'terminal', component: 'CommandOutput', props: { command: 'chess', args: 'white', text: String(r?.text ?? '') } })
+    expect(await row.find({ text: '♙' })).toBeDefined()
+    expect(await row.find({ key: `chess-${squareOf('e2')}` })).toBeDefined()
+  })
+})

@@ -1839,6 +1839,9 @@ async function checkUpdate($: any) {
     if (updCard) setCard($, null)
     return
   }
+  // A copy run straight from a folder is not an install: there is nothing for the card's Update to do.
+  // (TEXTLESS_OFFER_ANYWHERE=1 is for the tests, which run from a plain folder.)
+  if (!/[\\/]cache[\\/]/.test(String($.plugin.root)) && String(await $.env.get('TEXTLESS_OFFER_ANYWHERE').catch(() => '')) !== '1') return
   const now = await $.clock.now()
   const hidden = (await $.store.get('updateHidden').catch(() => null)) as { version: string; at: number } | null
   if (updateSnoozed(hidden, latest.version, now)) return
@@ -2313,6 +2316,8 @@ function boardCells(e: any) {
 function chessBoardView($: any, e: any) {
   const { Box, Text, Button, Svg } = $.ui.resolve(e) as Record<string, any>
   const cell = boardCells(e)
+  // The terminal has an Svg element too but cannot draw pictures in a plain window: it gets letters on coloured squares.
+  const plain = !Svg || e.surface === 'terminal'
   const g = chessGame!
   const p = parseFen(g.fen)
   const targets = new Set(chessPicked === null ? [] : legalMoves(p).filter(m => m.from === chessPicked).map(m => m.to))
@@ -2329,7 +2334,7 @@ function chessBoardView($: any, e: any) {
       const sq = r * 8 + f
       const piece = p.board[sq]
       const shade = sq === chessPicked ? CHESS_PICKED : targets.has(sq) ? CHESS_TARGET : g.last?.includes(sq) ? CHESS_LAST : (r + f) % 2 ? CHESS_LIGHT : CHESS_DARK
-      if (!Svg) {
+      if (plain) {
         // The terminal: small squares, one button each. The no-break spaces keep an empty square as wide as a full one.
         const glyph = piece ? CHESS_GLYPH[piece] : ' '
         cells.push(
@@ -2376,7 +2381,7 @@ function chessBoardView($: any, e: any) {
         <Button key="chess-end" plain dimColor label="Close" onPress={() => chessEnd($)} />
       </Box>
       {g.mini ? null : rows}
-      {g.mini ? null : Svg ? (
+      {g.mini ? null : !plain ? (
         <Box key="chess-files" flexDirection="row">
           <Box width={2} flexShrink={0} />
           {(down ? 'hgfedcba' : 'abcdefgh').split('').map(l => (

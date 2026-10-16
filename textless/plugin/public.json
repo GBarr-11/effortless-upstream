@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.15.13",
+    "date": "2026-10-16",
+    "note": "Chess shows in the terminal, and no update offer on a folder copy.",
+    "detail": [
+      "A copy of textless run straight from a folder no longer shows an update card it could not act on.",
+      "The chess board now draws in a plain terminal, as letters on coloured squares, instead of an empty board."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.12",
     "date": "2026-10-16",
     "note": "Sound credits.",
