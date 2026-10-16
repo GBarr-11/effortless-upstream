@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.15.3",
+    "date": "2026-10-16",
+    "note": "/textless settings opens the full settings page.",
+    "detail": [
+      "/textless settings opens the settings page on the website, like the gear on the card. /textless panel opens the small version inside the app."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.2",
     "date": "2026-10-16",
     "note": "A safety fix for community scenes.",

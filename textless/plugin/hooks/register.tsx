@@ -2466,8 +2466,12 @@ export const register: Register = on => {
       return { text: summaryOn ? 'textless shows the done line, questions, links and next step under answers.' : 'textless shows only a show steps link under answers.' }
     }
     if (arg === 'settings') {
+      await openWebSettings($)
+      return { text: 'textless settings opened on the website (the ⚙ on the card does the same). /textless panel opens the small version inside the app.' }
+    }
+    if (arg === 'panel') {
       await openSettings($)
-      return { text: 'textless settings opened in the app. The ⚙ opens them on the website.' }
+      return { text: 'textless settings opened in the app. /textless settings opens the full page on the website.' }
     }
     if (arg === 'folder') {
       const dir = await openFolder($)
