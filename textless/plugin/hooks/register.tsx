@@ -1895,7 +1895,9 @@ async function runUpdate($: any, from: UpdateCard) {
     await step(['plugin', 'update', pluginId($)])
   } catch (error) {
     const message = String(error instanceof Error ? error.message : error)
-    setCard($, { ...from, stage: 'failed', detail: noClaudeHint(message, await updHome($)) ?? message })
+    // A copy run straight from a folder (a developer's) is not an install, so there is nothing for the CLI to update.
+    const notInstalled = /not installed/i.test(message) ? 'textless runs straight from a folder on this computer, so there is nothing to update here. Update that folder.' : undefined
+    setCard($, { ...from, stage: 'failed', detail: notInstalled ?? noClaudeHint(message, await updHome($)) ?? message })
     return
   }
   await syncRunningCopy($).catch(() => undefined)
@@ -2515,6 +2517,10 @@ export const register: Register = on => {
     if (arg === 'folder') {
       const dir = await openFolder($)
       return { text: `Your scenes folder: ${dir}. Drop GIF, PNG, WebP, JPG or SVG files in it (under about 95 KB each).` }
+    }
+    // A word this version does not know (a command from a newer one) must not flip the card on or off.
+    if (arg !== '' && arg !== 'on' && arg !== 'off') {
+      return { text: `textless does not know "${arg}" in this version. Commands: on, off, settings, panel, set <name>, next, get <id>, folder, update, update now, debug. If it should exist, this chat runs an older copy: open a new chat after updating.` }
     }
     await toggle($, arg === 'on' ? true : arg === 'off' ? false : undefined)
     return { text: (await chatOf($)).on ? 'textless on in this chat.' : 'textless off in this chat.' }

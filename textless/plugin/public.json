@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.15.10",
+    "date": "2026-10-16",
+    "note": "A mistyped command no longer flips the card.",
+    "detail": [
+      "An unknown /textless word shows the list of commands instead of switching the card on or off.",
+      "When textless runs from a folder instead of an install, the update card says there is nothing to update."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.9",
     "date": "2026-10-16",
     "note": "The update card shows next to effortless.",
