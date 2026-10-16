@@ -235,14 +235,17 @@ Tested on Claude Code 2.1.285 (stable), 2.1.286 and 2.1.288 at 80 and 120 column
 
 ## textless
 
-While Claude works, Claude Code shows every step it takes. textless puts one picture there instead, and when Claude is
-done you get the answer, with a pixel word that says whether it is done, needs you or stopped.
+While Claude works, Claude Code shows every step it takes. textless shows one piece of art there instead: a scene, an
+animation, a quote, a scene someone else made, or a game of chess. When Claude is done the answer is back as normal, and
+the steps are one click away under "show steps".
 
-- **Pick what shows:** a set (Clawd, Scenery, Paintings, Abstract, Working), one favourite scene, or your own art in
-  `~/.claude/textless/scenes`.
+- **Pick what shows:** a set (Clawd, Scenery, Paintings, Abstract, Minimal, Nostalgia, Working or Quotes), one favourite
+  scene, or your own art in `~/.claude/textless/scenes`.
 - **The Marketplace:** scenes other people made, checked before they go live. One command puts one on:
   `/textless get <id>`.
-- **One switch per chat:** the ⏻ next to the model name, or `/textless`.
+- **Chess:** `/chess` plays a built-in opponent with four levels, `/chess claude` plays against Claude.
+- **One switch per chat:** the Aa on the card (struck through means the steps are hidden), or `/textless`. The gear opens
+  the settings and the arrows fold the card to one line.
 
 Website, scenes and Marketplace: [heycubit.github.io/effortless/textless](https://heycubit.github.io/effortless/textless/).
 The code is in [`textless/`](textless/).
