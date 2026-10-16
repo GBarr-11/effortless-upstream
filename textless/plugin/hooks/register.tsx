@@ -1,5 +1,6 @@
 import type { Register } from 'claude-code'
 import { SCENES } from './art'
+import { sceneCells } from './terminal-art'
 import { bestMoveAsync, CHESS_LEVELS, type ChessLevel } from './chess-engine'
 import { describe as describeMove, inCheck, legalMoves, type Move, outcome, type Outcome, parseFen, picture, play, type Position, START, squareName, toFen, uci } from './chess-rules'
 import { checkFile } from './market-rules'
@@ -524,7 +525,7 @@ async function card($: any, e: any, chat: Chat, step: string) {
 const INTERACTIVE_CHESS = 'chess'
 
 async function drawCard($: any, e: any, chat: Chat, step: string) {
-  const { Box, Text, Svg, Button } = $.ui.resolve(e) as Record<string, any>
+  const { Box, Text, Svg, Button, Raster } = $.ui.resolve(e) as Record<string, any>
   await refreshTheme($)
   // Every redraw starts the image's animation over; starting each one as far in as the card has been showing makes
   // the restart land where the last drawing was, so it cannot be seen.
@@ -551,6 +552,24 @@ async function drawCard($: any, e: any, chat: Chat, step: string) {
   // Fill the box and crop what does not fit, centred, so a pane narrower than fitW keeps the full height. A scene whose
   // root says data-fit="contain" (a word that must stay whole) is fitted inside instead; it paints its own background
   // past its viewBox so the box still looks full.
+  // A plain terminal cannot draw an SVG: pixel-art scenes are painted as coloured half blocks, a quote as its words.
+  const terminal = e.surface === 'terminal'
+  let terminalArt: any = null
+  if (terminal) {
+    const columns = Number(e.viewport?.columns) || 80
+    const rows = Number(e.viewport?.rows) || 30
+    const cells = Raster ? sceneCells(art, Math.min(64, columns - 4), Math.max(6, Math.min(20, rows - 12))) : null
+    const quote = scene.set === 'quotes' ? QUOTES.find(q => q[0] === scene.name) : undefined
+    if (cells) terminalArt = <Raster key="textless-art" columns={cells.columns} rows={cells.rows} cells={cells.cells} />
+    else if (quote) {
+      terminalArt = (
+        <Box key="textless-quote" flexDirection="column" alignItems="center" paddingX={2} marginY={1}>
+          <Text color="#d97757" italic wrap="wrap">{quote[1]}</Text>
+          <Text dimColor>{`— ${quote[2]}`}</Text>
+        </Box>
+      )
+    }
+  }
   const contain = /<svg\b[^>]*\sdata-fit="contain"/.test(art)
   const fit = contain ? 'xMidYMid meet' : 'xMidYMid slice'
   const cover = art.replace(/<svg\b([^>]*?)\s*preserveAspectRatio="[^"]*"/, '<svg$1').replace(/<svg\b/, `<svg preserveAspectRatio="${fit}"`)
@@ -561,7 +580,7 @@ async function drawCard($: any, e: any, chat: Chat, step: string) {
         {Button ? controls($, e) : null}
         {Button ? sizeButton($, e, 'minimize') : null}
       </Box>
-      {Svg ? <Svg source={cover} alt="Claude working" width={fitW} height={ART_H} /> : null}
+      {terminal ? terminalArt : Svg ? <Svg source={cover} alt="Claude working" width={fitW} height={ART_H} /> : null}
       {/* Answered while a background task runs: Claude still has work under way, so it is not the person's turn yet. */}
       <Text color="#d97757" bold wrap="truncate">Claude is working</Text>
       <Text dimColor wrap="truncate">{chat.mainDone ? waitingFor(chat) : step}</Text>
@@ -2313,6 +2332,16 @@ function boardCells(e: any) {
   return { w, h, piece: Math.round(Math.min(w * 9, h * 22) * 0.72) }
 }
 
+// Squares for a plain terminal, in its own character cells (a cell is about twice as high as wide): as wide as the window
+// allows up to 8, half as high, and low enough that the board fits the rows when the window says how many it has.
+function terminalCells(e: any) {
+  const columns = Math.max(30, Number(e.viewport?.columns) || 80)
+  const rows = Number(e.viewport?.rows) || 0
+  let w = Math.max(3, Math.min(8, Math.floor((columns - 4) / 8)))
+  if (rows > 0) w = Math.min(w, Math.max(3, Math.floor((rows - 6) / 4)))
+  return { w, h: Math.max(1, Math.round(w / 2)) }
+}
+
 function chessBoardView($: any, e: any) {
   const { Box, Text, Button, Svg } = $.ui.resolve(e) as Record<string, any>
   const cell = boardCells(e)
@@ -2335,11 +2364,18 @@ function chessBoardView($: any, e: any) {
       const piece = p.board[sq]
       const shade = sq === chessPicked ? CHESS_PICKED : targets.has(sq) ? CHESS_TARGET : g.last?.includes(sq) ? CHESS_LAST : (r + f) % 2 ? CHESS_LIGHT : CHESS_DARK
       if (plain) {
-        // The terminal: small squares, one button each. The no-break spaces keep an empty square as wide as a full one.
-        const glyph = piece ? CHESS_GLYPH[piece] : ' '
+        // The terminal: squares of coloured background, the piece a filled shape in white or near-black so the two sides
+        // read apart, and a blank button laid over the whole square so a click anywhere on it counts.
+        const tc = terminalCells(e)
+        const white = piece ? piece === piece.toUpperCase() : false
         cells.push(
-          <Box key={`chess-cell-${sq}`} backgroundColor={shade}>
-            <Button key={`chess-${sq}`} plain label={` ${glyph} `} onPress={() => chessPress($, sq)} />
+          <Box key={`chess-cell-${sq}`} width={tc.w} height={tc.h} flexShrink={0} backgroundColor={shade} alignItems="center" justifyContent="center">
+            {piece ? <Text bold color={white ? '#ffffff' : '#0b0b0b'}>{CHESS_SOLID[piece.toLowerCase()]}</Text> : null}
+            <Box position="absolute" top={0} bottom={0} left={0} right={0} flexDirection="column">
+              {Array.from({ length: tc.h }, (_, line) => (
+                <Button key={line === 0 ? `chess-${sq}` : `chess-${sq}-${line}`} plain label={' '.repeat(tc.w)} onPress={() => chessPress($, sq)} />
+              ))}
+            </Box>
           </Box>,
         )
         continue
@@ -2388,7 +2424,14 @@ function chessBoardView($: any, e: any) {
             <Box key={`chess-file-${l}`} width={cell.w} flexShrink={0} justifyContent="center"><Text dimColor>{l}</Text></Box>
           ))}
         </Box>
-      ) : <Text dimColor>{down ? '   h  g  f  e  d  c  b  a' : '   a  b  c  d  e  f  g  h'}</Text>}
+      ) : (
+        <Box key="chess-files" flexDirection="row">
+          <Box width={2} flexShrink={0} />
+          {(down ? 'hgfedcba' : 'abcdefgh').split('').map(l => (
+            <Box key={`chess-file-${l}`} width={terminalCells(e).w} flexShrink={0} justifyContent="center"><Text dimColor>{l}</Text></Box>
+          ))}
+        </Box>
+      )}
     </Box>
   )
 }

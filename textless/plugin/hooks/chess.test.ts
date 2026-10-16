@@ -289,7 +289,24 @@ describe('the terminal board', () => {
     const e: any = $
     const r = await e.command.run({ command: 'chess', args: 'white' })
     const row: any = await e.ui.mount({ plugin: 'textless', surface: 'terminal', component: 'CommandOutput', props: { command: 'chess', args: 'white', text: String(r?.text ?? '') } })
-    expect(await row.find({ text: '♙' })).toBeDefined()
+    expect(await row.find({ text: '♟' })).toBeDefined()
     expect(await row.find({ key: `chess-${squareOf('e2')}` })).toBeDefined()
+  })
+})
+
+describe('the terminal card', () => {
+  test('paints the scene as coloured cells, or a quote as its words, where an SVG cannot be drawn', async ($, on) => {
+    fakeHost(on)
+    const clock = mock.clock(on)
+    const e: any = $
+    await e.prompt.submit({ text: 'go' })
+    await wait(1600)
+    const term = (id: string) => e.ui.mount({ plugin: 'textless', surface: 'terminal', component: 'ToolUse', props: { tool_use_id: id, tool: 'Bash', input: { description: 'Run the tests' }, isRunning: true } })
+    await term('t1')
+    await clock.advance(3500)
+    const card: any = await term('t1')
+    const art = await card.find({ key: 'textless-art' })
+    const quote = await card.find({ key: 'textless-quote' })
+    expect(art !== undefined || quote !== undefined).toBe(true)
   })
 })

@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.15.14",
+    "date": "2026-10-16",
+    "note": "Artwork in the terminal.",
+    "detail": [
+      "In a plain terminal the pixel-art scenes are painted as coloured blocks while Claude works, and quotes show as text.",
+      "The terminal chess board has bigger squares and white and black pieces you can tell apart."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.13",
     "date": "2026-10-16",
     "note": "Chess shows in the terminal, and no update offer on a folder copy.",
