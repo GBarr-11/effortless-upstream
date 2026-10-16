@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.15.11",
+    "date": "2026-10-16",
+    "note": "Clearer update card messages.",
+    "detail": [
+      "The update card says plainly when textless runs from a folder and there is nothing to update, and the update check points at the card under the newest answer."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.10",
     "date": "2026-10-16",
     "note": "A mistyped command no longer flips the card.",
