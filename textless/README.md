@@ -1,6 +1,6 @@
 <p align="center"><img src="brand/readme-banner.png" alt="textless, a Claude Code mod: art instead of the wall of text" width="100%"></p>
 
-**textless** is a Claude Code mod. While Claude works, the chat shows one piece of art instead of every step: a scene, an
+**textless** is a Claude Code mod for the Claude desktop app (not the terminal). While Claude works, the chat shows one piece of art instead of every step: a scene, an
 animation, a quote, a scene someone else made, or a game of chess. When Claude is done, the chat is back as normal and
 the steps are one click away under "show steps".
 

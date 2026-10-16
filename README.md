@@ -235,7 +235,7 @@ Tested on Claude Code 2.1.285 (stable), 2.1.286 and 2.1.288 at 80 and 120 column
 
 ## textless
 
-While Claude works, Claude Code shows every step it takes. textless shows one piece of art there instead: a scene, an
+textless works in the Claude desktop app, not in the terminal. While Claude works, Claude Code shows every step it takes. textless shows one piece of art there instead: a scene, an
 animation, a quote, a scene someone else made, or a game of chess. When Claude is done the answer is back as normal, and
 the steps are one click away under "show steps".
 
