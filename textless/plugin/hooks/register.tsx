@@ -1850,7 +1850,7 @@ async function checkUpdateNow($: any): Promise<string> {
   await $.store.set('updateHidden', null).catch(() => undefined)
   if (updCard && (updCard.stage === 'done' || updCard.stage === 'failed')) updCard = null
   await checkUpdate($).catch((error: unknown) => { updLastCheck = `check failed: ${String(error).slice(0, 120)}` })
-  if (updCard?.stage === 'offer') return `textless ${updCard.version} is out: press Update above the prompt, or run /textless update now if the card is not there. (${updLastCheck})`
+  if (updCard?.stage === 'offer') return `textless ${updCard.version} is out: press Update on the card under the newest answer, or run /textless update now if the card is not there. (${updLastCheck})`
   // Run from a folder (a local marketplace or --plugin-dir), not a downloaded copy: the folder itself is the version,
   // so "up to date" says nothing.
   if (!/[\\/]cache[\\/]/.test(String($.plugin.root))) return `textless runs straight from its folder here (${$.plugin.root}), so it is always the version in that folder. The update card is for installs from GitHub. (${updLastCheck})`
