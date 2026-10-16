@@ -1846,7 +1846,7 @@ async function checkUpdateNow($: any): Promise<string> {
   await $.store.set('updateHidden', null).catch(() => undefined)
   if (updCard && (updCard.stage === 'done' || updCard.stage === 'failed')) updCard = null
   await checkUpdate($).catch((error: unknown) => { updLastCheck = `check failed: ${String(error).slice(0, 120)}` })
-  if (updCard?.stage === 'offer') return `textless ${updCard.version} is out: press Update above the prompt. (${updLastCheck})`
+  if (updCard?.stage === 'offer') return `textless ${updCard.version} is out: press Update above the prompt, or run /textless update now if the card is not there. (${updLastCheck})`
   // Run from a folder (a local marketplace or --plugin-dir), not a downloaded copy: the folder itself is the version,
   // so "up to date" says nothing.
   if (!/[\\/]cache[\\/]/.test(String($.plugin.root))) return `textless runs straight from its folder here (${$.plugin.root}), so it is always the version in that folder. The update card is for installs from GitHub. (${updLastCheck})`
@@ -1986,8 +1986,8 @@ const CHESS_KEY = 'chess'
 const CHESS_GLYPH: Record<string, string> = { K: '♔', Q: '♕', R: '♖', B: '♗', N: '♘', P: '♙', k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟' }
 const CHESS_LIGHT = '#c9b49a'
 const CHESS_DARK = '#8f6a52'
-const CHESS_PICKED = '#d97757'
-const CHESS_TARGET = '#eba88d'
+const CHESS_PICKED = '#7a9e5c'
+const CHESS_TARGET = '#a6c081'
 const CHESS_LAST = '#b8a07e'
 
 let chessGame: ChessGame | null = null
@@ -2443,6 +2443,13 @@ export const register: Register = on => {
       return { text: `textless set: ${setLabel(found)}.` }
     }
     if (arg === 'update') return { text: await checkUpdateNow($) }
+    // Where the card does not fit above the prompt (a short window, another bar there), the command does what Update does.
+    if (arg === 'update now') {
+      const said = await checkUpdateNow($)
+      if (updCard?.stage !== 'offer') return { text: said }
+      await runUpdate($, updCard)
+      return { text: updCard?.stage === 'failed' ? `textless could not update: ${updCard.detail ?? 'see the card'}` : 'textless updated. Run /reload-plugins to load it.' }
+    }
     if (arg.startsWith('card')) return { text: await previewCard($, arg.slice(4).trim()) }
     if (arg === 'debug') {
       debugOn = !debugOn
