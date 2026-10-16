@@ -1,6 +1,6 @@
 import type { Register } from 'claude-code'
 import { SCENES } from './art'
-import { bestMove, CHESS_LEVELS, type ChessLevel } from './chess-engine'
+import { bestMoveAsync, CHESS_LEVELS, type ChessLevel } from './chess-engine'
 import { describe as describeMove, inCheck, legalMoves, type Move, outcome, type Outcome, parseFen, picture, play, type Position, START, squareName, toFen, uci } from './chess-rules'
 import { checkFile } from './market-rules'
 import { onceMs, quoteCard, stillCard } from './quill'
@@ -798,7 +798,8 @@ async function openWebSettings($: any) {
   }
   // Watch closely for a while: the person is on the page and expects a save to show at once.
   watchUntil = Number(await $.clock.now()) + 20 * 60_000
-  const windows = (await $.env.get('USERPROFILE').catch(() => '')) !== ''
+  // From the plugin's own path, not from USERPROFILE: the app sets that on a Mac too, and rundll32 does not exist there.
+  const windows = /^[A-Za-z]:|\\/.test(String($.plugin.root))
   // rundll32 hands the address to the default browser and answers 0; explorer answers 1 even when it opens one.
   const ways = windows ? [['rundll32', 'url.dll,FileProtocolHandler', url], ['explorer.exe', url]] : [['open', url], ['xdg-open', url]]
   for (const argv of ways) {
@@ -807,6 +808,7 @@ async function openWebSettings($: any) {
     if (r.exitCode !== -1) return
   }
   // No browser would start: the settings in the app still work.
+  $.ui.toast('textless: no browser would open, so the small settings panel is shown. /textless debug logs why.')
   await openSettings($)
 }
 
@@ -2167,6 +2169,12 @@ async function chessPress($: any, sq: number) {
     return
   }
   const g = chessGame
+  // The opponent's turn and nothing thinking: its timer was lost (a reload, a closed chat). A click wakes it, so a game
+  // never sits waiting for a move that is not coming.
+  if (g && !g.over && g.waiting === 'claude' && g.vs !== 'claude' && !chessThinking) {
+    void chessEngineMove($).catch(() => undefined)
+    return
+  }
   dbg($, `chess press sq=${sq} picked=${chessPicked} waiting=${g?.waiting} over=${g?.over ?? '-'}`)
   if (!g || g.over || g.waiting !== 'you') return
   const p = parseFen(g.fen)
@@ -2206,20 +2214,27 @@ async function chessYourMove($: any, p: Position, move: Move) {
 }
 
 // The built-in opponent's reply, a moment after the person's move so it can be seen first.
+let chessThinking = false
 async function chessEngineMove($: any) {
   const g = chessGame
-  if (!g || g.over || g.vs === 'claude' || g.waiting !== 'claude') return
-  const p = parseFen(g.fen)
-  const move = bestMove(p, g.level ?? 'hard')
-  if (!move) return
-  const next = play(p, move)
-  g.fen = toFen(next)
-  g.moves.push(uci(move))
-  g.last = [move.from, move.to]
-  g.over = chessEnding(next)
-  g.waiting = 'you'
-  chessSound($, chessKind(p, move, next, g.over))
-  await chessSave($)
+  if (!g || g.over || g.vs === 'claude' || g.waiting !== 'claude' || chessThinking) return
+  chessThinking = true
+  try {
+    const p = parseFen(g.fen)
+    // Thinks in slices, giving the app a turn between them, so a click or a typed key is never held up by the think.
+    const move = await bestMoveAsync(p, g.level ?? 'hard', () => new Promise<void>(done => void $.clock.after(0, () => done())))
+    if (!move || chessGame !== g || g.waiting !== 'claude') return
+    const next = play(p, move)
+    g.fen = toFen(next)
+    g.moves.push(uci(move))
+    g.last = [move.from, move.to]
+    g.over = chessEnding(next)
+    g.waiting = 'you'
+    chessSound($, chessKind(p, move, next, g.over))
+    await chessSave($)
+  } finally {
+    chessThinking = false
+  }
 }
 
 // Claude's move from its answer: the last "MOVE: e7e5" line, checked against the legal moves.
@@ -2363,6 +2378,7 @@ function chessBoardView($: any, e: any) {
 
 async function chessStart($: any) {
   await chessLoad($)
+  if (chessGame && !chessGame.over && chessGame.waiting === 'claude' && chessGame.vs !== 'claude') $.clock.after(chessThink(), () => void chessEngineMove($).catch(() => undefined))
   void $.command.register({ name: 'chess', description: 'Play chess in this chat: against the computer, or /chess claude against Claude.' }).catch(() => undefined)
 }
 

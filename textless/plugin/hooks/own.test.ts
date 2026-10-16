@@ -46,7 +46,7 @@ describe('own scenes on the settings page', () => {
     expect(html).toContain('window.TEXTLESS_HASH="k=')
     expect(html.indexOf('TEXTLESS_OWN')).toBeLessThan(html.indexOf('var API'))
     // The browser gets the file the plugin wrote (the engine shows paths in the host's own form, so compare the ends).
-    expect(String(host.ran[0]?.[1]).split('\\').join('/').endsWith('/.claude/textless/settings.html')).toBe(true)
+    expect(String(host.ran[0]?.at(-1)).split('\\').join('/').endsWith('/.claude/textless/settings.html')).toBe(true)
   })
 
   test('offline, the gear opens the site itself', async ($, on) => {
@@ -55,6 +55,6 @@ describe('own scenes on the settings page', () => {
     const strip: any = await buttonsRow($, on)
     await strip.press({ key: 'textless-settings' })
     expect([...host.written.keys()].some(p => p.endsWith('settings.html'))).toBe(false)
-    expect(host.ran[0]?.[1]).toMatch(/^https:\/\/textless-preview\.isac-ehrstedt\.workers\.dev\/settings\/#k=/)
+    expect(host.ran[0]?.at(-1)).toMatch(/^https:\/\/textless-preview\.isac-ehrstedt\.workers\.dev\/settings\/#k=/)
   })
 })

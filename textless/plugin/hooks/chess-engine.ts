@@ -101,7 +101,7 @@ const LEVELS: Record<ChessLevel, { depth: number; ms: number; slip: number }> = 
 
 /** The engine's move for the side to move at a level, or null when there is none. Deepens one move at a time and keeps
  * the last depth that finished in time, so a crowded position cannot hold the chat up. */
-export function bestMove(p: Position, level: ChessLevel | number = 'hard', random: () => number = Math.random): Move | null {
+function* steps(p: Position, level: ChessLevel | number, random: () => number): Generator<void, Move | null> {
   const all = legalMoves(p)
   if (all.length === 0) return null
   const cfg = typeof level === 'number' ? { depth: level, ms: 60_000, slip: 0 } : LEVELS[level]
@@ -121,10 +121,34 @@ export function bestMove(p: Position, level: ChessLevel | number = 'hard', rando
         best = score
         found = [m]
       } else if (score === best) found.push(m)
+      yield
     }
     if (expired) break
     picks = found
     if (best > MATE - 100) break
   }
-  return picks[Math.floor(random() * picks.length)]
+  return picks[Math.floor(picks.length * random())]
+}
+
+export function bestMove(p: Position, level: ChessLevel | number = 'hard', random: () => number = Math.random): Move | null {
+  const run = steps(p, level, random)
+  for (;;) {
+    const r = run.next()
+    if (r.done) return r.value
+  }
+}
+
+/** The same move, found in slices: after each root move that took long, `pause` runs, so the rest of the app is not held
+ * for the whole think (the plugin runs on one thread, and a long think left buttons dead). */
+export async function bestMoveAsync(p: Position, level: ChessLevel | number, pause: () => Promise<void>, random: () => number = Math.random): Promise<Move | null> {
+  const run = steps(p, level, random)
+  let last = Date.now()
+  for (;;) {
+    const r = run.next()
+    if (r.done) return r.value
+    if (Date.now() - last > 25) {
+      await pause()
+      last = Date.now()
+    }
+  }
 }

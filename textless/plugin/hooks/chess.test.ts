@@ -264,3 +264,20 @@ describe('the Chess set', () => {
     expect(host.store.get('chess')).toBeUndefined()
   })
 })
+
+describe('a lost opponent timer', () => {
+  test('a click wakes an opponent that was never told to move, so a game cannot sit stuck', async ($, on) => {
+    const host = fakeHost(on)
+    const clock = mock.clock(on)
+    const e: any = $
+    // The game as a reload leaves it: the opponent's turn, with no timer running.
+    host.store.set('chess', { fen: START, moves: ['e2e4'], waiting: 'claude', tries: 0, vs: 'engine', side: 'w' })
+    const r = await e.command.run({ command: 'chess', args: '' })
+    const row: any = await out(e, String(r?.text ?? ''))
+    await row.press({ key: sq('d2') })
+    await clock.advance(5000)
+    const saved: any = JSON.parse(JSON.stringify(host.store.get('chess')))
+    expect(saved.waiting).toBe('you')
+    expect(saved.moves.length).toBeGreaterThan(1)
+  })
+})

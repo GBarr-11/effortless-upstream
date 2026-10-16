@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.15.6",
+    "date": "2026-10-16",
+    "note": "The settings gear works on a Mac, and chess no longer freezes the app.",
+    "detail": [
+      "On a Mac the gear opens the full settings page in the browser instead of the small panel.",
+      "The chess opponent thinks without holding the app up, and a game stuck on its turn wakes when you click."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.5",
     "date": "2026-10-16",
     "note": "A calmer chess board.",
