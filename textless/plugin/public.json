@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.15.15",
+    "date": "2026-10-16",
+    "note": "The terminal scene plays, and chess pieces show.",
+    "detail": [
+      "In a plain terminal the scene now moves while Claude works.",
+      "The terminal chess board shows its pieces again, and a click anywhere on a square counts.",
+      "The terminal card has its own labelled buttons: Aa, settings and Minimize."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.14",
     "date": "2026-10-16",
     "note": "Artwork in the terminal.",

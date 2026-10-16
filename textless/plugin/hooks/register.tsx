@@ -524,6 +524,23 @@ async function card($: any, e: any, chat: Chat, step: string) {
 // Sets that are played, not watched. The settings page lists them under Interactive sets.
 const INTERACTIVE_CHESS = 'chess'
 
+// A terminal scene plays by being drawn again: each frame is the scene read at the card's age. The redraw runs while a
+// card is being drawn and stops a moment after the last one.
+let termTimer: { cancel: () => void } | null = null
+let termDrawnAt = 0
+function terminalPlay($: any, now: number) {
+  termDrawnAt = now
+  if (termTimer) return
+  termTimer = $.clock.every(250, async () => {
+    if ((await $.clock.now()) - termDrawnAt > 2000) {
+      termTimer?.cancel()
+      termTimer = null
+      return
+    }
+    $.ui.invalidate('ui.render')
+  })
+}
+
 async function drawCard($: any, e: any, chat: Chat, step: string) {
   const { Box, Text, Svg, Button, Raster } = $.ui.resolve(e) as Record<string, any>
   await refreshTheme($)
@@ -558,9 +575,12 @@ async function drawCard($: any, e: any, chat: Chat, step: string) {
   if (terminal) {
     const columns = Number(e.viewport?.columns) || 80
     const rows = Number(e.viewport?.rows) || 30
-    const cells = Raster ? sceneCells(art, Math.min(64, columns - 4), Math.max(6, Math.min(20, rows - 12))) : null
+    const cells = Raster ? sceneCells(src, Math.min(64, columns - 4), Math.max(6, Math.min(20, rows - 12)), Math.max(0, now - chat.longAt) / 1000) : null
     const quote = scene.set === 'quotes' ? QUOTES.find(q => q[0] === scene.name) : undefined
-    if (cells) terminalArt = <Raster key="textless-art" columns={cells.columns} rows={cells.rows} cells={cells.cells} />
+    if (cells) {
+      terminalArt = <Raster key="textless-art" columns={cells.columns} rows={cells.rows} cells={cells.cells} />
+      terminalPlay($, now)
+    }
     else if (quote) {
       terminalArt = (
         <Box key="textless-quote" flexDirection="column" alignItems="center" paddingX={2} marginY={1}>
@@ -633,7 +653,7 @@ function sizeButton($: any, e: any, kind: 'minimize' | 'expand') {
     else if (kind === 'minimize' && !chat.listed) await setMini($, true)
     else $.ui.invalidate('ui.render')
   }
-  if (!Svg) return <Button key={key} plain dimColor label={kind === 'minimize' ? ' ⤡ ' : ' ⤢ '} onPress={press} />
+  if (!Svg || e.surface === 'terminal') return <Button key={key} plain dimColor label={kind === 'minimize' ? ' Minimize ' : ' Expand '} onPress={press} />
   return (
     <Box key={`${key}-box`} flexDirection="row" alignItems="center" justifyContent="center" paddingX={1}>
       <Svg source={sizeIcon(kind, isLight ? '#8a8580' : '#8b8b93')} alt={kind === 'minimize' ? 'Minimize' : 'Full size'} width={14} height={14} />
@@ -719,6 +739,13 @@ async function setMini($: any, on: boolean) {
 function controls($: any, e: any, drawn?: { chat: Chat; id: string }) {
   const { Box, Text, Button } = $.ui.resolve(e) as Record<string, any>
   const on = drawn ? drawn.chat.on : true
+  // A plain terminal draws no hover or overlay: the switch and the settings are two labelled buttons.
+  if (e.surface === 'terminal') {
+    return [
+      <Button key="textless-switch" plain dimColor={!on} label={on ? ' Aa ' : ' Aa off '} onPress={() => toggle($, undefined, drawn)} />,
+      <Button key="textless-settings" plain dimColor label=" ⚙ " onPress={() => openWebSettings($)} />,
+    ]
+  }
   return [
     <Box key="textless-switch-box" flexDirection="row" alignItems="center" paddingX={1}>
       <Text color={on ? '#d77757' : undefined} dimColor={!on} bold={on} strikethrough={on} hover={{ scope: 'textless-switch', color: on ? '#f0a080' : hoverText() }}>Aa</Text>
@@ -2364,18 +2391,21 @@ function chessBoardView($: any, e: any) {
       const piece = p.board[sq]
       const shade = sq === chessPicked ? CHESS_PICKED : targets.has(sq) ? CHESS_TARGET : g.last?.includes(sq) ? CHESS_LAST : (r + f) % 2 ? CHESS_LIGHT : CHESS_DARK
       if (plain) {
-        // The terminal: squares of coloured background, the piece a filled shape in white or near-black so the two sides
-        // read apart, and a blank button laid over the whole square so a click anywhere on it counts.
+        // The terminal: the square's colour is the Box, a column of blank buttons (one per line, so a click anywhere counts)
+        // sits on it, and the piece is drawn last, on top, so the buttons do not paint it out. The piece is a filled shape in
+        // white or near-black so the two sides read apart.
         const tc = terminalCells(e)
         const white = piece ? piece === piece.toUpperCase() : false
         cells.push(
-          <Box key={`chess-cell-${sq}`} width={tc.w} height={tc.h} flexShrink={0} backgroundColor={shade} alignItems="center" justifyContent="center">
-            {piece ? <Text bold color={white ? '#ffffff' : '#0b0b0b'}>{CHESS_SOLID[piece.toLowerCase()]}</Text> : null}
-            <Box position="absolute" top={0} bottom={0} left={0} right={0} flexDirection="column">
-              {Array.from({ length: tc.h }, (_, line) => (
-                <Button key={line === 0 ? `chess-${sq}` : `chess-${sq}-${line}`} plain label={' '.repeat(tc.w)} onPress={() => chessPress($, sq)} />
-              ))}
-            </Box>
+          <Box key={`chess-cell-${sq}`} width={tc.w} height={tc.h} flexShrink={0} flexDirection="column" backgroundColor={shade}>
+            {Array.from({ length: tc.h }, (_, line) => (
+              <Button key={line === 0 ? `chess-${sq}` : `chess-${sq}-${line}`} plain label={' '.repeat(tc.w)} onPress={() => chessPress($, sq)} />
+            ))}
+            {piece ? (
+              <Box position="absolute" top={0} bottom={0} left={0} right={0} alignItems="center" justifyContent="center">
+                <Text bold color={white ? '#ffffff' : '#0b0b0b'}>{CHESS_SOLID[piece.toLowerCase()]}</Text>
+              </Box>
+            ) : null}
           </Box>,
         )
         continue

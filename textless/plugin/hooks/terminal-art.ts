@@ -61,9 +61,31 @@ function pathBoxes(d: string): [number, number, number, number][] {
   return boxes
 }
 
-/** The scene's first frame as pixels: a grid of the viewBox's units. Groups that start hidden are skipped, groups an
+/** An animation's value at `t` seconds: its values stepped by keyTimes (discrete) or blended between them. Numbers only;
+ * a translate is read as a pair. Null when it has nothing this can read. */
+function animated(attrs: string, t: number): number[] | null {
+  const values = (attr(attrs, 'values') ?? '').split(';').map(v => v.trim().split(/[\s,]+/).map(Number))
+  if (!values.length || values.some(v => v.some(Number.isNaN))) return null
+  const dur = parseFloat(attr(attrs, 'dur') ?? '')
+  if (!(dur > 0)) return values[0]
+  const raw = attr(attrs, 'keyTimes')
+  const times = raw ? raw.split(';').map(Number) : values.map((_, i) => (values.length === 1 ? 0 : i / (values.length - 1)))
+  if (times.length !== values.length) return values[0]
+  const repeat = attr(attrs, 'repeatCount')
+  const done = repeat !== 'indefinite' && t >= dur * (Number(repeat) || 1)
+  const p = done ? 1 : (t % dur) / dur
+  const discrete = attr(attrs, 'calcMode') === 'discrete'
+  let i = 0
+  while (i + 1 < times.length && times[i + 1] <= p) i++
+  if (discrete || i + 1 >= times.length || done) return values[i]
+  const span = times[i + 1] - times[i]
+  const f = span > 0 ? (p - times[i]) / span : 0
+  return values[i].map((v, k) => v + (values[i + 1][k] - v) * f)
+}
+
+/** The scene at `t` seconds as pixels: a grid of the viewBox's units. Groups that start hidden are skipped, groups an
  * opacity animation starts at 1 are shown; transforms and animations are otherwise ignored. */
-export function sceneGrid(svg: string): { w: number; h: number; px: Pixel[] } | null {
+export function sceneGrid(svg: string, t = 0): { w: number; h: number; px: Pixel[] } | null {
   const root = svg.match(/<svg\b([^>]*)>/)
   if (!root) return null
   const vb = attr(root[1], 'viewBox')?.trim().split(/[\s,]+/).map(Number)
@@ -84,10 +106,12 @@ export function sceneGrid(svg: string): { w: number; h: number; px: Pixel[] } | 
       }
     }
   }
-  // One entry per open <g>: shown or not, and its opacity.
-  const stack: { shown: boolean; opacity: number }[] = []
+  // One entry per open <g>: shown or not, its opacity and how far it is moved.
+  const stack: { shown: boolean; opacity: number; dx: number; dy: number }[] = []
   const hidden = () => stack.some(g => !g.shown)
   const opacity = () => stack.reduce((o, g) => o * g.opacity, 1)
+  const dx = () => stack.reduce((o, g) => o + g.dx, 0)
+  const dy = () => stack.reduce((o, g) => o + g.dy, 0)
   for (const m of svg.matchAll(/<(\/?)([A-Za-z][\w:-]*)([^>]*?)(\/?)>/g)) {
     const closing = m[1] === '/'
     const name = m[2]
@@ -96,19 +120,25 @@ export function sceneGrid(svg: string): { w: number; h: number; px: Pixel[] } | 
       if (closing) stack.pop()
       else if (m[4] !== '/') {
         const o = attr(attrs, 'opacity')
-        stack.push({ shown: o === undefined || Number(o) > 0, opacity: o === undefined ? 1 : Number(o) || 0 })
+        stack.push({ shown: o === undefined || Number(o) > 0, opacity: o === undefined ? 1 : Number(o) || 0, dx: 0, dy: 0 })
       }
       continue
     }
     if (closing) continue
     if (name === 'animate' && attr(attrs, 'attributeName') === 'opacity' && stack.length) {
-      // Its first value is how the group starts.
-      const first = Number((attr(attrs, 'values') ?? '').split(';')[0])
+      // How the group looks at `t`.
+      const v = animated(attrs, t)
       const top = stack[stack.length - 1]
-      if (!Number.isNaN(first)) {
-        top.shown = first > 0
-        top.opacity = first > 0 ? 1 : 0
+      if (v) {
+        top.shown = v[0] > 0
+        top.opacity = Math.max(0, Math.min(1, v[0]))
       }
+      continue
+    }
+    if (name === 'animateTransform' && attr(attrs, 'type') === 'translate' && stack.length) {
+      const v = animated(attrs, t)
+      const top = stack[stack.length - 1]
+      if (v) { top.dx = v[0]; top.dy = v[1] ?? 0 }
       continue
     }
     if (hidden()) continue
@@ -119,9 +149,9 @@ export function sceneGrid(svg: string): { w: number; h: number; px: Pixel[] } | 
     if (name === 'rect') {
       const rw = Number(attr(attrs, 'width'))
       const rh = Number(attr(attrs, 'height'))
-      if (rw > 0 && rh > 0) paint(Number(attr(attrs, 'x') ?? 0), Number(attr(attrs, 'y') ?? 0), rw, rh, rgb, alpha)
+      if (rw > 0 && rh > 0) paint(Number(attr(attrs, 'x') ?? 0) + dx(), Number(attr(attrs, 'y') ?? 0) + dy(), rw, rh, rgb, alpha)
     } else if (name === 'path') {
-      for (const [bx, by, bw, bh] of pathBoxes(attr(attrs, 'd') ?? '')) paint(bx, by, bw, bh, rgb, alpha)
+      for (const [bx, by, bw, bh] of pathBoxes(attr(attrs, 'd') ?? '')) paint(bx + dx(), by + dy(), bw, bh, rgb, alpha)
     }
   }
   return px.some(p => p.a > 0) ? { w, h, px } : null
@@ -142,8 +172,8 @@ const rgbInt = (p: Pixel) => (Math.round(p.r) << 16) | (Math.round(p.g) << 8) | 
 
 /** The scene as terminal cells: shrunk by whole pixels to fit `maxCols` columns and `maxRows` rows, two pixel rows to a
  * row of half blocks. Null when the scene has nothing this can read (a quote, a picture). */
-export function sceneCells(svg: string, maxCols: number, maxRows: number): { columns: number; rows: number; cells: string } | null {
-  const grid = sceneGrid(svg)
+export function sceneCells(svg: string, maxCols: number, maxRows: number, t = 0): { columns: number; rows: number; cells: string } | null {
+  const grid = sceneGrid(svg, t)
   if (!grid) return null
   const k = Math.max(1, Math.ceil(grid.w / Math.max(8, maxCols)), Math.ceil(grid.h / (Math.max(4, maxRows) * 2)))
   const columns = Math.ceil(grid.w / k)
