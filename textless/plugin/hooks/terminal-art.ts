@@ -106,12 +106,39 @@ export function sceneGrid(svg: string, t = 0): { w: number; h: number; px: Pixel
       }
     }
   }
-  // One entry per open <g>: shown or not, its opacity and how far it is moved.
-  const stack: { shown: boolean; opacity: number; dx: number; dy: number }[] = []
+  // One entry per open <g>: shown or not, its opacity, how far it is moved, and the fill its shapes inherit.
+  type Group = { shown: boolean; opacity: number; dx: number; dy: number; fill?: string; fillOpacity: number }
+  const stack: Group[] = []
   const hidden = () => stack.some(g => !g.shown)
   const opacity = () => stack.reduce((o, g) => o * g.opacity, 1)
   const dx = () => stack.reduce((o, g) => o + g.dx, 0)
   const dy = () => stack.reduce((o, g) => o + g.dy, 0)
+  const inherited = () => {
+    let fill: string | undefined
+    let fo = 1
+    for (const g of stack) {
+      if (g.fill !== undefined) fill = g.fill
+      fo *= g.fillOpacity
+    }
+    return { fill, fo }
+  }
+  // A shape that holds an animation of its own (its x or y) is painted when it closes, once the animation was read.
+  let open: { name: string; attrs: string; x?: number; y?: number } | null = null
+  const shape = (name: string, attrs: string, over?: { x?: number; y?: number }) => {
+    if (hidden()) return
+    const inh = inherited()
+    const rgb = colour(attr(attrs, 'fill') ?? inh.fill)
+    if (!rgb) return
+    const alpha = Math.min(1, Number(attr(attrs, 'fill-opacity') ?? 1) * inh.fo * Number(attr(attrs, 'opacity') ?? 1) * opacity())
+    if (alpha <= 0) return
+    if (name === 'rect') {
+      const rw = Number(attr(attrs, 'width'))
+      const rh = Number(attr(attrs, 'height'))
+      if (rw > 0 && rh > 0) paint((over?.x ?? Number(attr(attrs, 'x') ?? 0)) + dx(), (over?.y ?? Number(attr(attrs, 'y') ?? 0)) + dy(), rw, rh, rgb, alpha)
+    } else if (name === 'path') {
+      for (const [bx, by, bw, bh] of pathBoxes(attr(attrs, 'd') ?? '')) paint(bx + dx(), by + dy(), bw, bh, rgb, alpha)
+    }
+  }
   for (const m of svg.matchAll(/<(\/?)([A-Za-z][\w:-]*)([^>]*?)(\/?)>/g)) {
     const closing = m[1] === '/'
     const name = m[2]
@@ -120,11 +147,30 @@ export function sceneGrid(svg: string, t = 0): { w: number; h: number; px: Pixel
       if (closing) stack.pop()
       else if (m[4] !== '/') {
         const o = attr(attrs, 'opacity')
-        stack.push({ shown: o === undefined || Number(o) > 0, opacity: o === undefined ? 1 : Number(o) || 0, dx: 0, dy: 0 })
+        const tr = attr(attrs, 'transform')?.match(/translate\(\s*(-?[\d.]+)[\s,]+(-?[\d.]+)?/)
+        stack.push({
+          shown: o === undefined || Number(o) > 0,
+          opacity: o === undefined ? 1 : Number(o) || 0,
+          dx: tr ? Number(tr[1]) : 0,
+          dy: tr ? Number(tr[2] ?? 0) : 0,
+          fill: attr(attrs, 'fill'),
+          fillOpacity: Number(attr(attrs, 'fill-opacity') ?? 1),
+        })
       }
       continue
     }
-    if (closing) continue
+    if (closing) {
+      if (open && open.name === name) {
+        shape(open.name, open.attrs, open)
+        open = null
+      }
+      continue
+    }
+    if (name === 'animate' && open && (attr(attrs, 'attributeName') === 'x' || attr(attrs, 'attributeName') === 'y')) {
+      const v = animated(attrs, t)
+      if (v) { if (attr(attrs, 'attributeName') === 'x') open.x = v[0]; else open.y = v[0] }
+      continue
+    }
     if (name === 'animate' && attr(attrs, 'attributeName') === 'opacity' && stack.length) {
       // How the group looks at `t`.
       const v = animated(attrs, t)
@@ -141,18 +187,8 @@ export function sceneGrid(svg: string, t = 0): { w: number; h: number; px: Pixel
       if (v) { top.dx = v[0]; top.dy = v[1] ?? 0 }
       continue
     }
-    if (hidden()) continue
-    const rgb = colour(attr(attrs, 'fill'))
-    if (!rgb) continue
-    const alpha = Math.min(1, Number(attr(attrs, 'fill-opacity') ?? 1) * Number(attr(attrs, 'opacity') ?? 1) * opacity())
-    if (alpha <= 0) continue
-    if (name === 'rect') {
-      const rw = Number(attr(attrs, 'width'))
-      const rh = Number(attr(attrs, 'height'))
-      if (rw > 0 && rh > 0) paint(Number(attr(attrs, 'x') ?? 0) + dx(), Number(attr(attrs, 'y') ?? 0) + dy(), rw, rh, rgb, alpha)
-    } else if (name === 'path') {
-      for (const [bx, by, bw, bh] of pathBoxes(attr(attrs, 'd') ?? '')) paint(bx + dx(), by + dy(), bw, bh, rgb, alpha)
-    }
+    if ((name === 'rect' || name === 'path') && m[4] !== '/') open = { name, attrs }
+    else shape(name, attrs)
   }
   return px.some(p => p.a > 0) ? { w, h, px } : null
 }
@@ -179,13 +215,12 @@ export function sceneCells(svg: string, maxCols: number, maxRows: number, t = 0)
   const columns = Math.ceil(grid.w / k)
   const pixelRows = Math.ceil(grid.h / k)
   const rows = Math.ceil(pixelRows / 2)
-  // Each shrunk pixel averages its block, weighted by how much of it is painted.
+  // Each shrunk pixel takes the colour most of its block is painted in, so a two-pixel eye stays an eye and is not
+  // blended into the body; it counts as painted when at least half the block is.
   const small: Pixel[] = []
   for (let y = 0; y < rows * 2; y++) {
     for (let x = 0; x < columns; x++) {
-      let r = 0
-      let g = 0
-      let b = 0
+      const votes = new Map<number, { n: number; p: Pixel }>()
       let a = 0
       let n = 0
       for (let dy = 0; dy < k; dy++) {
@@ -196,12 +231,16 @@ export function sceneCells(svg: string, maxCols: number, maxRows: number, t = 0)
           const p = grid.px[sy * grid.w + sx]
           n++
           a += p.a
-          r += p.r * p.a
-          g += p.g * p.a
-          b += p.b * p.a
+          if (p.a < 0.5) continue
+          const key = rgbInt(p)
+          const v = votes.get(key)
+          if (v) v.n++
+          else votes.set(key, { n: 1, p })
         }
       }
-      small.push(a > 0 ? { r: r / a, g: g / a, b: b / a, a: a / Math.max(1, n) } : { r: 0, g: 0, b: 0, a: 0 })
+      let best: { n: number; p: Pixel } | null = null
+      for (const v of votes.values()) if (!best || v.n > best.n) best = v
+      small.push(best ? { r: best.p.r, g: best.p.g, b: best.p.b, a: a / Math.max(1, n) } : { r: 0, g: 0, b: 0, a: 0 })
     }
   }
   const words = new Uint32Array(columns * rows * 3)
@@ -218,4 +257,11 @@ export function sceneCells(svg: string, maxCols: number, maxRows: number, t = 0)
     }
   }
   return { columns, rows, cells: base64(new Uint8Array(words.buffer)) }
+}
+
+/** Whether the terminal can show this scene: it is built of shapes it reads, not of embedded pictures, and something is
+ * painted in it at some moment. */
+export function readable(svg: string): boolean {
+  if (/<image\b/.test(svg)) return false
+  return [0.3, 2.1, 4.7, 7.9].some(t => sceneGrid(svg, t) !== null)
 }

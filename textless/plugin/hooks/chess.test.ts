@@ -291,6 +291,10 @@ describe('the terminal board', () => {
     const row: any = await e.ui.mount({ plugin: 'textless', surface: 'terminal', component: 'CommandOutput', props: { command: 'chess', args: 'white', text: String(r?.text ?? '') } })
     expect(await row.find({ text: '♟' })).toBeDefined()
     expect(await row.find({ key: `chess-${squareOf('e2')}` })).toBeDefined()
+    // Picking a piece and moving it works from the terminal's buttons, the piece's own square included.
+    await row.press({ key: sq('e2') })
+    await row.press({ key: sq('e4') })
+    expect(await row.find({ text: '♟ Chess · The computer is thinking…' })).toBeDefined()
   })
 })
 

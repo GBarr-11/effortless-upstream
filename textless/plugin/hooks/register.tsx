@@ -1,6 +1,6 @@
 import type { Register } from 'claude-code'
 import { SCENES } from './art'
-import { sceneCells } from './terminal-art'
+import { readable, sceneCells } from './terminal-art'
 import { bestMoveAsync, CHESS_LEVELS, type ChessLevel } from './chess-engine'
 import { describe as describeMove, inCheck, legalMoves, type Move, outcome, type Outcome, parseFen, picture, play, type Position, START, squareName, toFen, uci } from './chess-rules'
 import { checkFile } from './market-rules'
@@ -526,6 +526,16 @@ const INTERACTIVE_CHESS = 'chess'
 
 // A terminal scene plays by being drawn again: each frame is the scene read at the card's age. The redraw runs while a
 // card is being drawn and stops a moment after the last one.
+const readableScenes = new Map<string, boolean>()
+function terminalReadable(scene: { set: string; name: string; svg: string }) {
+  const key = `${scene.set}/${scene.name}`
+  let ok = readableScenes.get(key)
+  if (ok === undefined) {
+    ok = scene.set === 'quotes' || readable(scene.svg)
+    readableScenes.set(key, ok)
+  }
+  return ok
+}
 let termTimer: { cancel: () => void } | null = null
 let termDrawnAt = 0
 function terminalPlay($: any, now: number) {
@@ -546,7 +556,15 @@ async function drawCard($: any, e: any, chat: Chat, step: string) {
   await refreshTheme($)
   // Every redraw starts the image's animation over; starting each one as far in as the card has been showing makes
   // the restart land where the last drawing was, so it cannot be seen.
-  const scene = sceneList()[sceneIndex(chat)]
+  let scene = sceneList()[sceneIndex(chat)]
+  // A plain terminal reads only scenes built of shapes: one made of embedded pictures is swapped for the next one of its
+  // set that it can read, else any that it can.
+  if (e.surface === 'terminal' && Raster && !terminalReadable(scene)) {
+    const all = sceneList()
+    const at = all.indexOf(scene)
+    const pick = [...all.slice(at + 1), ...all.slice(0, at)]
+    scene = pick.find(c => c.set === scene.set && terminalReadable(c)) ?? pick.find(terminalReadable) ?? scene
+  }
   const now = await $.clock.now()
   let src = scene.svg
   const once = onceMs(src)
@@ -2360,11 +2378,11 @@ function boardCells(e: any) {
 }
 
 // Squares for a plain terminal, in its own character cells (a cell is about twice as high as wide): as wide as the window
-// allows up to 8, half as high, and low enough that the board fits the rows when the window says how many it has.
+// allows up to 6, half as high, and low enough that the board fits the rows when the window says how many it has.
 function terminalCells(e: any) {
   const columns = Math.max(30, Number(e.viewport?.columns) || 80)
   const rows = Number(e.viewport?.rows) || 0
-  let w = Math.max(3, Math.min(8, Math.floor((columns - 4) / 8)))
+  let w = Math.max(3, Math.min(6, Math.floor((columns - 4) / 8)))
   if (rows > 0) w = Math.min(w, Math.max(3, Math.floor((rows - 6) / 4)))
   return { w, h: Math.max(1, Math.round(w / 2)) }
 }
@@ -2391,21 +2409,28 @@ function chessBoardView($: any, e: any) {
       const piece = p.board[sq]
       const shade = sq === chessPicked ? CHESS_PICKED : targets.has(sq) ? CHESS_TARGET : g.last?.includes(sq) ? CHESS_LAST : (r + f) % 2 ? CHESS_LIGHT : CHESS_DARK
       if (plain) {
-        // The terminal: the square's colour is the Box, a column of blank buttons (one per line, so a click anywhere counts)
-        // sits on it, and the piece is drawn last, on top, so the buttons do not paint it out. The piece is a filled shape in
-        // white or near-black so the two sides read apart.
+        // The terminal: the square's colour is the Box and a column of blank buttons (one per line, so a click anywhere
+        // counts) fills it. The piece sits in the middle line between two buttons, in the flow: a layer on top of the buttons
+        // took every click on a piece. It is a filled shape in white or near-black so the two sides read apart.
         const tc = terminalCells(e)
         const white = piece ? piece === piece.toUpperCase() : false
+        const mid = Math.floor((tc.h - 1) / 2)
+        const left = Math.floor((tc.w - 1) / 2)
+        const blank = (n: number) => ' '.repeat(n)
+        const press = () => chessPress($, sq)
         cells.push(
           <Box key={`chess-cell-${sq}`} width={tc.w} height={tc.h} flexShrink={0} flexDirection="column" backgroundColor={shade}>
-            {Array.from({ length: tc.h }, (_, line) => (
-              <Button key={line === 0 ? `chess-${sq}` : `chess-${sq}-${line}`} plain label={' '.repeat(tc.w)} onPress={() => chessPress($, sq)} />
-            ))}
-            {piece ? (
-              <Box position="absolute" top={0} bottom={0} left={0} right={0} alignItems="center" justifyContent="center">
-                <Text bold color={white ? '#ffffff' : '#0b0b0b'}>{CHESS_SOLID[piece.toLowerCase()]}</Text>
-              </Box>
-            ) : null}
+            {Array.from({ length: tc.h }, (_, line) => {
+              const name = line === 0 ? `chess-${sq}` : `chess-${sq}-${line}`
+              if (!piece || line !== mid) return <Button key={name} plain label={blank(tc.w)} onPress={press} />
+              return (
+                <Box key={`${name}-row`} flexDirection="row">
+                  {left > 0 ? <Button key={name} plain label={blank(left)} onPress={press} /> : null}
+                  <Text key={`${name}-piece`} bold color={white ? '#ffffff' : '#0b0b0b'}>{CHESS_SOLID[piece.toLowerCase()]}</Text>
+                  <Button key={`${name}-r`} plain label={blank(tc.w - 1 - left)} onPress={press} />
+                </Box>
+              )
+            })}
           </Box>,
         )
         continue

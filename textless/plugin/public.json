@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.15.16",
+    "date": "2026-10-16",
+    "note": "Terminal chess is clickable, and more scenes draw in the terminal.",
+    "detail": [
+      "In a plain terminal the chess pieces can be clicked again, and the board is a little smaller.",
+      "More scenes draw and move in the terminal; scenes made of pictures are swapped for one that can be drawn."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.15",
     "date": "2026-10-16",
     "note": "The terminal scene plays, and chess pieces show.",
