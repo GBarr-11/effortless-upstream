@@ -38,6 +38,12 @@ function fakeHost(on: any, opts: { failUpdate?: boolean } = {}) {
   return { store, ran, copied }
 }
 
+// The card sits under the newest answer: finish a turn, then draw that answer.
+async function answerRow(e: any, on: any, surface: 'desktop' | 'terminal' = 'desktop') {
+  await e.turn.complete({ answer: 'Done.', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't' })
+  return e.ui.mount({ plugin: 'textless', surface, component: 'AssistantMessage', props: { text: 'Done.' } })
+}
+
 describe('update card', () => {
   test('versions compare and public.json reads newest first', () => {
     expect(isNewer('0.10.0', '0.9.72')).toBe(true)
@@ -51,12 +57,12 @@ describe('update card', () => {
 
   test('a newer version is offered, Update runs claude plugin, and Updated links and shares', async ($, on) => {
     const host = fakeHost(on)
+    on('turn.complete', () => ({ text: '' }))
     mock.clock(on)
     const e: any = $
-    const band: any = await e.ui.mount({ plugin: 'textless', surface: 'desktop', component: 'AbovePrompt', props: {} })
+    const band: any = await answerRow(e, on)
     await e.command.run({ command: 'textless', args: 'update' })
     expect((await band.find({ text: 'textless 9.1.0 is out' }))).toBeDefined()
-    expect(await band.find({ key: 'core' })).toBeDefined()
     await band.press({ key: 'tl-update-go' })
     const claude = host.ran.filter(a => a.includes('plugin')).map(a => a.slice(1).join(' '))
     expect(claude).toContain('plugin marketplace update effortless')
@@ -69,9 +75,10 @@ describe('update card', () => {
 
   test('Later puts the version away, and a failed update says why', async ($, on) => {
     const host = fakeHost(on, { failUpdate: true })
+    on('turn.complete', () => ({ text: '' }))
     mock.clock(on)
     const e: any = $
-    const band: any = await e.ui.mount({ plugin: 'textless', surface: 'desktop', component: 'AbovePrompt', props: {} })
+    const band: any = await answerRow(e, on)
     await e.command.run({ command: 'textless', args: 'update' })
     await band.press({ key: 'tl-update-go' })
     expect(await band.find({ text: 'Update failed' })).toBeDefined()
@@ -86,14 +93,15 @@ describe('update card', () => {
 
   test('every look of the card draws on desktop, and the terminal gets none', async ($, on) => {
     fakeHost(on)
+    on('turn.complete', () => ({ text: '' }))
     mock.clock(on)
     const e: any = $
     for (const stage of ['offer', 'updating', 'done', 'failed']) {
       await e.command.run({ command: 'textless', args: `card ${stage}` })
-      const band: any = await e.ui.mount({ plugin: 'textless', surface: 'desktop', component: 'AbovePrompt', props: {} })
+      const band: any = await answerRow(e, on)
       expect(await band.find({ key: 'tl-update-card' })).toBeDefined()
     }
-    const term: any = await e.ui.mount({ plugin: 'textless', surface: 'terminal', component: 'AbovePrompt', props: {} })
+    const term: any = await answerRow(e, on, 'terminal')
     expect(await term.find({ key: 'tl-update-card' })).toBeUndefined()
   })
 })

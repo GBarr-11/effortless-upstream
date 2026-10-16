@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.15.9",
+    "date": "2026-10-16",
+    "note": "The update card shows next to effortless.",
+    "detail": [
+      "The update card now sits under the newest answer, where it shows whether or not effortless is installed."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.8",
     "date": "2026-10-16",
     "note": "The chess sounds ship with textless.",

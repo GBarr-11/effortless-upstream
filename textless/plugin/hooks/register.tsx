@@ -734,6 +734,7 @@ async function newestRow($: any, e: any, inner: unknown, left?: unknown) {
     <Box key="textless-answer" flexDirection="column" gap={1}>
       {inner}
       {row}
+      {await updBelow($, e)}
       {chessBelow($, e)}
     </Box>
   )
@@ -1579,6 +1580,7 @@ async function doneCard($: any, e: any, next: any, at: number) {
     <Box key={`done-${at}`} flexDirection="column" gap={1}>
       {inner}
       {await doneRow($, e, at, next)}
+      {(await chatOf($)).newestAt === at ? await updBelow($, e) : null}
       {(await chatOf($)).newestAt === at ? (await chessOwns($), chessBelow($, e)) : null}
     </Box>
   )
@@ -1935,6 +1937,13 @@ async function previewCard($: any, stage: string): Promise<string> {
 
 
 /** The updCard to draw above the prompt now, or null. Desktop only: the terminal has /textless update. */
+// The update card under the newest answer. The spot above the prompt is no use for it: effortless draws its own strip
+// there and, in its usual layout, never hands that spot on, so a hook of ours there does not run beside it.
+async function updBelow($: any, e: any) {
+  const upd = await shownUpdateCard($, String(e.surface ?? ''))
+  return upd ? updateCardOf($, e, upd) : null
+}
+
 let lastBand = ''
 async function shownUpdateCard($: any, surface: string): Promise<UpdateCard | null> {
   if (surface === 'terminal' || !updCard) return null
@@ -2902,22 +2911,12 @@ export const register: Register = on => {
   // stays, under the card.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     void afterLoad($).catch(() => undefined)
-    const upd = await shownUpdateCard($, String(e.surface ?? ''))
+    // Where the update card used to be drawn; it sits under the newest answer now (updBelow). Kept for the log.
     {
-      // One line when anything changes, so a card that does not show can be explained from the log.
-      const seen = `${e.surface} card=${updCard?.stage ?? '-'} shown=${Boolean(upd)} maxRows=${String((e.props as any)?.maxRows ?? '-')}`
+      const seen = `${e.surface} card=${updCard?.stage ?? '-'} maxRows=${String((e.props as any)?.maxRows ?? '-')}`
       if (seen !== lastBand) { lastBand = seen; dbg($, `band above prompt: ${seen}`) }
     }
-    if (!upd) return next(e)
-    const inner = await next(e)
-    dbg($, `band above prompt: card drawn, inner ${inner ? 'present' : 'none'}`)
-    const { Box } = $.ui.resolve(e) as Record<string, any>
-    return (
-      <Box flexDirection="column">
-        {upd ? updateCardOf($, e, upd) : null}
-        {inner}
-      </Box>
-    )
+    return next(e)
   })
   // The model strip under the prompt is left to the app: on the desktop it is a row of its own, and textless's buttons
   // sit in the chat instead (the minimized card and the newest answer).
