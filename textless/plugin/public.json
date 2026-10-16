@@ -1,5 +1,14 @@
 [
   {
+    "version": "0.15.12",
+    "date": "2026-10-16",
+    "note": "Sound credits.",
+    "detail": [
+      "The credits for the chess sounds are written down. Nothing else changed."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.11",
     "date": "2026-10-16",
     "note": "Clearer update card messages.",
