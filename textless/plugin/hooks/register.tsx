@@ -1935,6 +1935,7 @@ async function previewCard($: any, stage: string): Promise<string> {
 
 
 /** The updCard to draw above the prompt now, or null. Desktop only: the terminal has /textless update. */
+let lastBand = ''
 async function shownUpdateCard($: any, surface: string): Promise<UpdateCard | null> {
   if (surface === 'terminal' || !updCard) return null
   if (updCard.stage === 'done' && (await $.clock.now()) - updCard.at >= UPDATED_CARD_MS) return null
@@ -2084,28 +2085,30 @@ function chessShown(e: any): any {
 // A short sound for a move: wav files in hooks/sounds, played by the system's own player (the app's audio call plays
 // nothing in a Windows terminal). Fire and forget; off when the game says quiet.
 // Your own sounds win: a wav named move, capture, check or end in ~/.claude/textless/sounds replaces the bundled one.
-let ownSounds: Promise<{ dir: string; names: Set<string> }> | null = null
-async function ownSound($: any, kind: string): Promise<string | null> {
-  ownSounds ??= scenesDir($).then(async scenes => {
-    const dir = scenes.replace(/scenes$/, 'sounds')
-    const list = ((await $.fs.list(dir).catch(() => [])) as { name: string }[]).map(f => f.name)
-    return { dir, names: new Set(list) }
-  })
-  const own = await ownSounds.catch(() => null)
-  if (!own) return null
-  // move.wav, movealt1.wav, movealt2.wav ...: one of them by chance, so a run of moves is not one click repeated.
-  const files = [...own.names].filter(n => n === `${kind}.wav` || new RegExp(`^${kind}alt\\d+\\.wav$`).test(n))
+// Either folder may hold several of a kind (move.wav, movealt1.wav, movealt2.wav ...): one is picked by chance, so a
+// run of moves is not one click repeated.
+const soundFolders = new Map<string, Promise<{ dir: string; names: string[] }>>()
+async function soundIn($: any, dir: string, kind: string): Promise<string | null> {
+  if (!soundFolders.has(dir)) {
+    soundFolders.set(dir, Promise.resolve($.fs.list(dir)).catch(() => []).then((list: any) => ({ dir, names: (list as { name: string }[]).map(f => f.name) })))
+  }
+  const found = await soundFolders.get(dir)!
+  const files = found.names.filter(n => n === `${kind}.wav` || new RegExp(`^${kind}alt\\d+\\.wav$`).test(n))
   if (!files.length) return null
-  return `${own.dir}${own.dir.includes('\\') ? '\\' : '/'}${files[Math.floor(Math.random() * files.length)]}`
+  const sep = dir.includes('\\') ? '\\' : '/'
+  return `${dir}${sep}${files[Math.floor(Math.random() * files.length)]}`
 }
 
 async function chessSound($: any, kind: 'move' | 'capture' | 'check' | 'end' | 'win' | 'lose') {
   if (chessGame?.quiet) return
-  // A capture has no bundled sound: without one of your own it plays as a move.
+  const own = (await scenesDir($)).replace(/scenes$/, 'sounds')
+  const bundled = `${$.plugin.root}/hooks/sounds`
+  // Your folder first, then the bundled one; a kind with no file anywhere plays as a move.
   const file =
-    (await ownSound($, kind).catch(() => null)) ??
-    (kind === 'capture' ? await ownSound($, 'move').catch(() => null) : null) ??
-    `${$.plugin.root}/hooks/sounds/${kind === 'capture' ? 'move' : kind}.wav`
+    (await soundIn($, own, kind).catch(() => null)) ??
+    (await soundIn($, bundled, kind).catch(() => null)) ??
+    (await soundIn($, own, 'move').catch(() => null)) ??
+    `${bundled}/move.wav`
   const windows = /^[A-Za-z]:|\\/.test(String($.plugin.root))
   const argv = windows
     ? ['powershell', '-NoProfile', '-NonInteractive', '-Command', `(New-Object Media.SoundPlayer '${file.replace(/'/g, "''")}').PlaySync()`]
@@ -2900,8 +2903,14 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     void afterLoad($).catch(() => undefined)
     const upd = await shownUpdateCard($, String(e.surface ?? ''))
+    {
+      // One line when anything changes, so a card that does not show can be explained from the log.
+      const seen = `${e.surface} card=${updCard?.stage ?? '-'} shown=${Boolean(upd)} maxRows=${String((e.props as any)?.maxRows ?? '-')}`
+      if (seen !== lastBand) { lastBand = seen; dbg($, `band above prompt: ${seen}`) }
+    }
     if (!upd) return next(e)
     const inner = await next(e)
+    dbg($, `band above prompt: card drawn, inner ${inner ? 'present' : 'none'}`)
     const { Box } = $.ui.resolve(e) as Record<string, any>
     return (
       <Box flexDirection="column">

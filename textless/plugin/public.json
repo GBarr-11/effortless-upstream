@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.15.8",
+    "date": "2026-10-16",
+    "note": "The chess sounds ship with textless.",
+    "detail": [
+      "Move, capture, check and game-end sounds, with a few move variants picked by chance. Your own wav files in ~/.claude/textless/sounds still replace them.",
+      "/textless debug also logs why the update card above the prompt does or does not show."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.6",
     "date": "2026-10-16",
     "note": "The settings gear works on a Mac, and chess no longer freezes the app.",

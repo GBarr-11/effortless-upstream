@@ -1,11 +1,8 @@
 # Sound credits
 
-The four chess sounds are by el_boss on Freesound, the "Chess Puzzle Blitz SFX" pack, all CC0 (public domain):
+move.wav, movealt1.wav, movealt2.wav, capture.wav, check.wav: short chess piece sounds from a royalty-free sound website,
+trimmed and levelled for textless. Source site and licence: TO FILL IN before the next public release.
 
-- move.wav: Piece Placement (also plays on captures), https://freesound.org/s/546119/
-- check.wav: Piece Slide, https://freesound.org/s/546118/
-- end.wav: Board Start, https://freesound.org/s/546121/
-
-Converted to mono wav and volume-levelled. No credit is required by CC0; it is given anyway.
+end.wav: Board Start by el_boss on Freesound, CC0, https://freesound.org/s/546121/ (levelled).
 
 win.wav and lose.wav are made for textless (a short synthesised rising and falling tone sequence), no licence needed.
