@@ -84,7 +84,7 @@ describe('chess against the computer', () => {
     // Clicks while it thinks are ignored.
     await row.press({ key: sq('d2') })
     await row.press({ key: sq('d4') })
-    await clock.advance(600)
+    await clock.advance(2600)
     expect(await row.find({ text: '♟ Chess · Your move' })).toBeDefined()
     expect(host.sent.length).toBe(0)
     const saved: any = JSON.parse(JSON.stringify(host.store.get('chess')))
@@ -213,7 +213,7 @@ describe('playing black', () => {
     const text = String(r?.text ?? '')
     expect(text).toContain('black')
     const row: any = await out(e, text)
-    await clock.advance(600)
+    await clock.advance(2600)
     const saved: any = JSON.parse(JSON.stringify(host.store.get('chess')))
     expect(saved.moves.length).toBe(1)
     expect(saved.side).toBe('b')
@@ -224,7 +224,7 @@ describe('playing black', () => {
     // The black pieces are the person's.
     await row.press({ key: sq('e7') })
     await row.press({ key: sq('e5') })
-    await clock.advance(600)
+    await clock.advance(2600)
     const after: any = JSON.parse(JSON.stringify(host.store.get('chess')))
     expect(after.moves.length).toBe(3)
     expect(after.moves[1]).toBe('e7e5')

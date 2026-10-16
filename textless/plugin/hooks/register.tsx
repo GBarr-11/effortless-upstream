@@ -2119,6 +2119,10 @@ function chessKind(before: Position, move: Move, after: Position, over?: string,
   return 'move' as const
 }
 
+// How long the built-in opponent seems to think: a second or two, a little different each move, so its reply does not
+// snap back the moment you let go of the piece.
+const chessThink = () => 900 + Math.floor(Math.random() * 1100)
+
 async function chessNew($: any, vs: 'engine' | 'claude' = chessGame?.vs ?? 'engine', side: 'w' | 'b' = Math.random() < 0.5 ? 'w' : 'b') {
   chessGame = { fen: START, moves: [], waiting: side === 'w' ? 'you' : 'claude', tries: 0, vs, level: chessGame?.level, side, quiet: chessGame?.quiet }
   chessPicked = null
@@ -2127,7 +2131,7 @@ async function chessNew($: any, vs: 'engine' | 'claude' = chessGame?.vs ?? 'engi
   if (side === 'b') {
     // A moment after the command has printed its row: a message sent from inside the command is not reliable.
     if (vs === 'claude') $.clock.after(300, () => void chessAsk($, '♟ You play white and open. I play black.').catch(() => undefined))
-    else $.clock.after(450, () => void chessEngineMove($).catch(() => undefined))
+    else $.clock.after(chessThink(), () => void chessEngineMove($).catch(() => undefined))
   }
 }
 
@@ -2194,7 +2198,7 @@ async function chessYourMove($: any, p: Position, move: Move) {
   chessSound($, chessKind(p, move, next, g.over, true))
   await chessSave($)
   if (g.vs !== 'claude') {
-    if (!g.over) $.clock.after(450, () => void chessEngineMove($).catch(() => undefined))
+    if (!g.over) $.clock.after(chessThink(), () => void chessEngineMove($).catch(() => undefined))
     return
   }
   if (g.over) await $.prompt.submit({ text: `♟ I play ${words}. ${g.over}`, asUser: true }).catch(() => undefined)

@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.15.5",
+    "date": "2026-10-16",
+    "note": "A calmer chess board.",
+    "detail": [
+      "The picked chess piece and its moves are highlighted in green instead of orange-red.",
+      "The built-in chess opponent takes a second or two to answer instead of snapping back."
+    ],
+    "public": true
+  },
+  {
     "version": "0.15.4",
     "date": "2026-10-16",
     "note": "/textless update now, and a calmer chess highlight.",
