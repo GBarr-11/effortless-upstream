@@ -1,0 +1,33 @@
+{
+  "name": "effortless-status",
+  "displayName": "effortless status",
+  "description": "The effortless bar for Claude Code in VS Code: effort, context and the prompt-cache countdown in the status bar, with Auto, Compact and Handoff in its menu.",
+  "version": "0.1.2",
+  "publisher": "gbarr-11",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HeyCubit/effortless"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "effortless.menu", "title": "effortless: Menu" },
+      { "command": "effortless.toggleAuto", "title": "effortless: Auto on/off" },
+      { "command": "effortless.compact", "title": "effortless: Compact" },
+      { "command": "effortless.handoff", "title": "effortless: Handoff (quick)" },
+      { "command": "effortless.handoffFull", "title": "effortless: Handoff (full)" },
+      { "command": "effortless.switchChat", "title": "effortless: Switch chat" }
+    ]
+  }
+}
